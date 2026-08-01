@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "carryfarm-demo",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "carryfarm.ui.app", "--demo", "--port", "8777"],
+      "port": 8777
+    }
+  ]
+}

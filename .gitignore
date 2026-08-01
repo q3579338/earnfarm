@@ -1,0 +1,33 @@
+# 运行时数据 —— 绝不进仓库
+# 数据库里有加密后的 API key，配置里可能有推送 token。
+# 虽然密钥是加密的，但没有任何理由把它们推到远端。
+*.db
+*.db-wal
+*.db-shm
+config.toml
+*.log
+
+# 密钥材料
+*.key
+*.pem
+*.p12
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
