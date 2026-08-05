@@ -509,38 +509,6 @@ def build(config: Config, offline: bool = False,
                 # 用户唯一能确认它还活着的办法是盯着时间戳等——那还不如手动点
                 next_label = ui.label().classes("text-xs mr-1") \
                     .style(f"color:{theme.NEUTRAL}")
-                # 交易所勾选：这是**数据源**选择不是过滤器——改选立刻重拉行情，
-                # 没勾的家连请求都不发（限频配额跟着省）。选择存库，重启保留
-                venue_boxes: dict[Venue, ui.checkbox] = {}
-                venue_btn = ui.button(
-                    f"{len(state.enabled_venues)} 家", icon="tune") \
-                    .props("dense outline") \
-                    .tooltip("勾选参与配对的交易所。至少两家——跨所配对没有对手腿不成立。"
-                             "改选后几秒内自动重拉行情。")
-                with venue_btn:
-                    with ui.menu().props("auto-close=false"), \
-                            ui.column().classes("p-2 gap-0"):
-                        def on_venue_toggle() -> None:
-                            picked = [v for v, box in venue_boxes.items() if box.value]
-                            if not state.set_venues(picked):
-                                ui.notify("至少要勾两家：跨所配对需要对手腿",
-                                          type="warning")
-                                # 拒绝后把界面掰回真实状态，否则勾选框和实际选择
-                                # 从此各说各话
-                                for v, box in venue_boxes.items():
-                                    box.value = v in state.enabled_venues
-                                return
-                            venue_btn.text = f"{len(picked)} 家"
-                            # 重拉由 adaptive_tick 按代际差触发（≤5 秒），
-                            # 不直接调 tick：这里是同步回调，而且上一轮可能还在跑
-
-                        for v in Venue:
-                            venue_boxes[v] = ui.checkbox(
-                                VENUE_LABELS.get(v, v.value),
-                                value=v in state.enabled_venues,
-                                on_change=lambda e: on_venue_toggle()) \
-                                .props("dense")
-
                 auto_switch = ui.switch("自动", value=state.auto_refresh) \
                     .props("dense").tooltip("按下面的间隔自动重拉行情")
                 interval_select = ui.select(
@@ -554,6 +522,37 @@ def build(config: Config, offline: bool = False,
                     on_click=lambda: refresh_opportunities(
                         state, feed_status, feed_spinner, history_status),
                 ).props("dense outline")
+
+            # 交易所勾选：**平铺一行，不进任何弹层**。这里曾经是"N 家"按钮 +
+            # 弹出菜单——弹层依赖 Quasar 的进入动画，在不合成帧的环境（后台标签、
+            # 嵌入式 webview）里永远停在透明的第一帧，用户点了按钮什么都看不见，
+            # 表现就是"选不了"。平铺勾选框没有动画、没有 portal，在哪都能点。
+            # 语义：这是**数据源**选择不是过滤器——改选后几秒内自动重拉行情，
+            # 没勾的家连请求都不发（限频配额跟着省）。选择存库，重启保留。
+            venue_boxes: dict[Venue, ui.checkbox] = {}
+            with ui.row().classes("w-full items-center gap-3 flex-wrap mb-1"):
+                ui.label("交易所").classes("text-xs").style(f"color:{theme.NEUTRAL}") \
+                    .tooltip("勾选参与配对的交易所。至少两家——跨所配对没有对手腿"
+                             "不成立。改选后几秒内自动重拉行情。")
+
+                def on_venue_toggle() -> None:
+                    picked = [v for v, box in venue_boxes.items() if box.value]
+                    if not state.set_venues(picked):
+                        ui.notify("至少要勾两家：跨所配对需要对手腿", type="warning")
+                        # 拒绝后把界面掰回真实状态，否则勾选框和实际选择
+                        # 从此各说各话
+                        for v, box in venue_boxes.items():
+                            box.value = v in state.enabled_venues
+                        return
+                    # 重拉由 adaptive_tick 按代际差触发（≤5 秒），
+                    # 不直接调 tick：这里是同步回调，而且上一轮可能还在跑
+
+                for v in Venue:
+                    venue_boxes[v] = ui.checkbox(
+                        VENUE_LABELS.get(v, v.value),
+                        value=v in state.enabled_venues,
+                        on_change=lambda e: on_venue_toggle()) \
+                        .props("dense").classes("text-xs")
 
             def rescore_in_place() -> None:
                 """成交方式切换：整榜重评，**不重拉行情**。
@@ -580,7 +579,8 @@ def build(config: Config, offline: bool = False,
                 # 留着一个转不动的开关只会让人以为是坏了
                 auto_switch.set_enabled(False)
                 interval_select.set_enabled(False)
-                venue_btn.set_enabled(False)
+                for box in venue_boxes.values():
+                    box.set_enabled(False)
                 next_label.text = ""
             else:
                 def tick():
@@ -614,6 +614,12 @@ def build(config: Config, offline: bool = False,
                         history_status.text = want
                         history_status.style(f"color:{state.history_status_color}")
                     feed_spinner.set_visibility(state.refreshing)
+                    # 勾选也是共享状态：另一个标签页改了选择，这边的勾选框
+                    # 不跟着动的话，两个页面会各说各话
+                    for v, box in venue_boxes.items():
+                        want_checked = v in state.enabled_venues
+                        if box.value != want_checked:
+                            box.value = want_checked
 
                 def render_countdown() -> None:
                     sync_from_state()
