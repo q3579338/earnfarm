@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import contextlib
 import time
+from typing import Sequence
 
 from nicegui import app as ng_app, ui
 
@@ -32,7 +33,7 @@ from ..public_feed import (
 from ..session import Session
 from ..trader import Trader
 from . import theme
-from .accounts import AccountsPanel
+from .accounts import VENUE_LABELS, AccountsPanel
 from .hedges import HedgesPanel, open_create_dialog
 from .opportunities import OpportunityBoard
 
@@ -56,6 +57,10 @@ DEFAULT_REFRESH_INTERVAL_S = 300
 # 重启一次就忘掉的设置等于没有设置。
 META_AUTO_REFRESH = "ui:auto_refresh"
 META_REFRESH_INTERVAL = "ui:refresh_interval_s"
+# 勾选了哪些交易所（csv 存 venue.value）。跨所配对至少要两家——
+# 只剩一家时每个币都自成 bucket，榜单必然全空，而界面上看不出为什么
+MIN_VENUES = 2
+META_VENUES = "ui:venues"
 
 
 def _interval_label(seconds: int) -> str:
@@ -95,6 +100,17 @@ class AppState:
         # 用户可以在机会榜上改，改完存库；这里读的是上次存的值
         self.auto_refresh: bool = True
         self.min_refresh_gap_s: float = float(DEFAULT_REFRESH_INTERVAL_S)
+        # 勾选的交易所。默认全家；这是**数据源**选择不是过滤器——
+        # 改选要重拉行情（少拉的家连请求都不发，限频配额跟着省下来）。
+        # 代际计数解决"改选时上一轮还在跑"的时序：那一轮完成会盖掉 last_refresh，
+        # 拿 last_refresh=0 当触发信号会被它覆盖，重拉就得干等满一个间隔。
+        # 比较 refreshed_rev != venues_rev 不会被任何完成动作洗掉
+        self.enabled_venues: tuple[Venue, ...] = tuple(Venue)
+        self.venues_rev = 0
+        self.refreshed_rev = 0
+        # 最后一次改选的时刻，给重拉做防抖：用户在菜单里连点几家是一个动作，
+        # tick 落在点击序列半路会拿着中间态白拉一轮全市场
+        self.venues_changed_at = 0.0
         self._load_refresh_prefs()
         self.history_days = DEFAULT_HISTORY_DAYS
         self.history_busy = False
@@ -119,6 +135,18 @@ class AppState:
                 want = self._clamp_interval(float(raw))
                 self.min_refresh_gap_s = float(
                     min(REFRESH_INTERVAL_CHOICES, key=lambda s: abs(s - want)))
+            saved_venues = self.session.storage.get_meta(META_VENUES)
+            if saved_venues:
+                # 不认识的名字直接丢（回滚到少一家的版本时别把整个选择废掉），
+                # 剩得太少就回全家——榜单空着却不知道为什么，比忘掉选择更糟
+                picked = []
+                for token in saved_venues.split(","):
+                    try:
+                        picked.append(Venue(token.strip()))
+                    except ValueError:
+                        continue
+                if len(picked) >= MIN_VENUES:
+                    self.enabled_venues = tuple(picked)
         except Exception:
             pass
 
@@ -144,6 +172,21 @@ class AppState:
         if not self.auto_refresh or self.refreshing or not self.last_refresh:
             return 0.0
         return max(0.0, self.last_refresh + self.min_refresh_gap_s - time.time())
+
+    def set_venues(self, venues: Sequence[Venue]) -> bool:
+        """改勾选的交易所。低于 MIN_VENUES 一律拒绝（返回 False，状态不动）：
+        跨所配对至少要两家，剩一家时榜单必然全空，而界面上看不出为什么。"""
+        picked = tuple(dict.fromkeys(venues))       # 去重且保序
+        if len(picked) < MIN_VENUES:
+            return False
+        if picked != self.enabled_venues:
+            self.venues_rev += 1        # 触发一次尽快重拉，见 __init__ 的注释
+            self.venues_changed_at = time.time()
+        self.enabled_venues = picked
+        with contextlib.suppress(Exception):
+            self.session.storage.set_meta(
+                META_VENUES, ",".join(v.value for v in picked))
+        return True
 
     def ensure_backfiller(self) -> HistoryBackfiller:
         """惰性建回填器。用的是 Session 的库——历史资金费是公开数据，
@@ -220,13 +263,17 @@ async def refresh_opportunities(state: AppState, status: ui.label,
     state.refreshing = True
     state.refresh_started_at = time.time()
     spinner.set_visibility(True)
-    # 家数从枚举数出来，别写死——上一次写死"六家"，加了两家之后这行文案
+    # 家数从**勾选**里数出来，别写死——上一次写死"六家"，加了两家之后这行文案
     # 骗了所有人一轮
     _set_feed_status(state, status,
-                     f"正在从{len(tuple(Venue))}家交易所拉取实时资金费率…")
+                     f"正在从{len(state.enabled_venues)}家交易所拉取实时资金费率…")
+    # 这一轮覆盖的是哪一代勾选。改选发生在半路时代际对不上，
+    # adaptive_tick 会在这一轮结束后立刻再拉一轮
+    rev = state.venues_rev
     try:
         state.set_history_days(_history_days_for(state.board.filters.horizon_h))
-        async with PublicFeed(backfiller=state.ensure_backfiller(),
+        async with PublicFeed(state.enabled_venues,
+                              backfiller=state.ensure_backfiller(),
                               history_days=state.history_days) as feed:
             rows = await feed.build_opportunities(
                 notional=state.board.filters.notional,
@@ -251,6 +298,7 @@ async def refresh_opportunities(state: AppState, status: ui.label,
         # 先出榜。历史后台补，补完再刷新评分
         state.board.set_rows(rows)
         state.last_refresh = time.time()
+        state.refreshed_rev = rev
         ok_text = (f"已连 {len(state.venues_ok)} 家：{'、'.join(state.venues_ok)}"
                    f"　·　{time.strftime('%H:%M:%S')} 更新")
         if state.venues_failed:
@@ -461,6 +509,38 @@ def build(config: Config, offline: bool = False,
                 # 用户唯一能确认它还活着的办法是盯着时间戳等——那还不如手动点
                 next_label = ui.label().classes("text-xs mr-1") \
                     .style(f"color:{theme.NEUTRAL}")
+                # 交易所勾选：这是**数据源**选择不是过滤器——改选立刻重拉行情，
+                # 没勾的家连请求都不发（限频配额跟着省）。选择存库，重启保留
+                venue_boxes: dict[Venue, ui.checkbox] = {}
+                venue_btn = ui.button(
+                    f"{len(state.enabled_venues)} 家", icon="tune") \
+                    .props("dense outline") \
+                    .tooltip("勾选参与配对的交易所。至少两家——跨所配对没有对手腿不成立。"
+                             "改选后几秒内自动重拉行情。")
+                with venue_btn:
+                    with ui.menu().props("auto-close=false"), \
+                            ui.column().classes("p-2 gap-0"):
+                        def on_venue_toggle() -> None:
+                            picked = [v for v, box in venue_boxes.items() if box.value]
+                            if not state.set_venues(picked):
+                                ui.notify("至少要勾两家：跨所配对需要对手腿",
+                                          type="warning")
+                                # 拒绝后把界面掰回真实状态，否则勾选框和实际选择
+                                # 从此各说各话
+                                for v, box in venue_boxes.items():
+                                    box.value = v in state.enabled_venues
+                                return
+                            venue_btn.text = f"{len(picked)} 家"
+                            # 重拉由 adaptive_tick 按代际差触发（≤5 秒），
+                            # 不直接调 tick：这里是同步回调，而且上一轮可能还在跑
+
+                        for v in Venue:
+                            venue_boxes[v] = ui.checkbox(
+                                VENUE_LABELS.get(v, v.value),
+                                value=v in state.enabled_venues,
+                                on_change=lambda e: on_venue_toggle()) \
+                                .props("dense")
+
                 auto_switch = ui.switch("自动", value=state.auto_refresh) \
                     .props("dense").tooltip("按下面的间隔自动重拉行情")
                 interval_select = ui.select(
@@ -500,6 +580,7 @@ def build(config: Config, offline: bool = False,
                 # 留着一个转不动的开关只会让人以为是坏了
                 auto_switch.set_enabled(False)
                 interval_select.set_enabled(False)
+                venue_btn.set_enabled(False)
                 next_label.text = ""
             else:
                 def tick():
@@ -565,10 +646,19 @@ def build(config: Config, offline: bool = False,
 
                 def adaptive_tick():
                     render_countdown()
-                    if not state.auto_refresh:
-                        return          # 用户把自动关了，只更新倒计时文案
                     if state.refreshing:
                         return          # 上一轮还没跑完，这一拍直接跳过
+                    if state.refreshed_rev != state.venues_rev:
+                        # 勾选变了：榜上还是旧家数的数据，尽快重拉一轮。
+                        # 这一条**不看自动开关**——改选是用户刚做的显式动作，
+                        # 不响应它比"自动刷新关着"更让人困惑。
+                        # 3 秒防抖：连点几家是一个动作，落在点击序列半路
+                        # 会拿着中间态白拉一轮全市场
+                        if time.time() - state.venues_changed_at < 3.0:
+                            return
+                        return tick()
+                    if not state.auto_refresh:
+                        return          # 用户把自动关了，只更新倒计时文案
                     if time.time() - state.last_refresh < state.min_refresh_gap_s:
                         return
                     return tick()
