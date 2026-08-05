@@ -626,3 +626,74 @@ def test_rescore_keeps_the_fill_mode_of_each_row():
     again = feed.rescore([row], horizon_h=HORIZON_H)[0]
     assert again.fill_mode == "maker_one"
     assert again.cost_rt == pytest.approx(row.cost_rt, abs=1e-12)
+
+
+# ---- 配对组合的退而求其次（Backpack 接入时实测出的检测缺口） ----------------
+
+def test_pairing_falls_back_to_the_next_best_legs_when_the_extreme_leg_is_empty():
+    """极端腿没盘口时必须退而求其次，不能把整个 base 扔掉。
+
+    实测事故：PENDLE 的 Gate 腿（费率最低）带宽内只有 $39，整币被静默丢弃，
+    而"币安多 / Backpack 空"那对费差 120% 年化、两边都是深盘——费率极端的腿
+    往往正是盘子最小的腿，只试极端对会系统性错过"次优费差 × 真实深度"。
+    """
+    from carryfarm.models import Venue
+    from carryfarm.public_feed import PublicFeed, RawFunding
+
+    class ThreeLegFeed(PublicFeed):
+        async def fetch_funding(self):
+            def row(venue, symbol, rate):
+                return RawFunding(venue=venue, symbol=symbol, base="AAA",
+                                  rate=Decimal(rate), interval_h=8.0,
+                                  next_ts=NOW_S + 3600)
+            return {
+                # 极端多腿：费率最低但盘口是空的
+                Venue.GATE: [row(Venue.GATE, "AAA-dead", "-0.0030")],
+                # 次优多腿：费率没那么低，盘口健康
+                Venue.BITGET: [row(Venue.BITGET, "AAA-long", "-0.0005")],
+                Venue.BYBIT: [row(Venue.BYBIT, "AAA-short", "0.0030")],
+            }
+
+        async def fetch_depth(self, venue, symbol, band_bp=10.0):
+            if symbol == "AAA-dead":
+                return BookDepth(symbol=symbol,
+                                 bid_notional=Decimal("0"), ask_notional=Decimal("0"),
+                                 bid_price=Decimal("99.995"), bid_qty=Decimal("0"),
+                                 ask_price=Decimal("100.005"), ask_qty=Decimal("0"),
+                                 levels_used=0, band_bp=10.0, ts_ms=int(NOW_S * 1000))
+            return _depth(symbol)
+
+    feed = ThreeLegFeed(backfiller=StubBackfiller(), history_days=40)
+    rows = asyncio.run(feed.build_opportunities(
+        notional=50_000, horizon_h=HORIZON_H))
+    assert len(rows) == 1, "极端腿死了，base 不该跟着死"
+    o = rows[0]
+    assert o.long.symbol == "AAA-long", \
+        f"该退到次优多腿，实际配的是 {o.long.symbol}"
+    assert o.short.symbol == "AAA-short"
+
+
+def test_pairing_still_drops_the_base_when_every_combo_is_illiquid():
+    """所有组合都没盘口时才允许丢弃——丢弃是最后手段，不是默认动作。"""
+    from carryfarm.models import Venue
+    from carryfarm.public_feed import PublicFeed, RawFunding
+
+    class AllDeadFeed(PublicFeed):
+        async def fetch_funding(self):
+            def row(venue, symbol, rate):
+                return RawFunding(venue=venue, symbol=symbol, base="AAA",
+                                  rate=Decimal(rate), interval_h=8.0,
+                                  next_ts=NOW_S + 3600)
+            return {Venue.GATE: [row(Venue.GATE, "AAA-a", "-0.0030")],
+                    Venue.BYBIT: [row(Venue.BYBIT, "AAA-b", "0.0030")]}
+
+        async def fetch_depth(self, venue, symbol, band_bp=10.0):
+            return BookDepth(symbol=symbol,
+                             bid_notional=Decimal("0"), ask_notional=Decimal("0"),
+                             bid_price=Decimal("99.995"), bid_qty=Decimal("0"),
+                             ask_price=Decimal("100.005"), ask_qty=Decimal("0"),
+                             levels_used=0, band_bp=10.0, ts_ms=int(NOW_S * 1000))
+
+    feed = AllDeadFeed(backfiller=StubBackfiller(), history_days=40)
+    rows = asyncio.run(feed.build_opportunities(notional=50_000, horizon_h=HORIZON_H))
+    assert rows == []

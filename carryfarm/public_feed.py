@@ -70,6 +70,9 @@ DEPTH_BAND_BP = 10.0
 MIN_TOP_NOTIONAL = 500.0
 # 单次最多吃掉一档的这个比例。用来把"用户想放多少"折算成"实际能放多少"
 MAX_PARTICIPATION_OF_TOP = 0.5
+# 每个 base 最多尝试几组腿组合（按费差降序）。极端腿没盘口时退而求其次，
+# 3 组够覆盖"最肥的两三档费差"，再多就是拿限频换噪音
+MAX_PAIR_COMBOS = 3
 
 # 主流币：无论费率差多小都保证出现在榜上。
 # 理由：按费率差排序会系统性地只选中垃圾小币（费率极端往往正因为盘子小），
@@ -485,48 +488,71 @@ class PublicFeed:
 
         now = time.time()
         scored: list[ScoredOpportunity] = []
+        # 深度结果按 (venue, symbol) 缓存一轮：同一条腿会出现在同一 base 的
+        # 多个组合里，不缓存的话备选组合会把同一个符号的深度拉两三遍
+        depth_cache: dict[tuple[Venue, str], object] = {}
+
+        async def leg_book(raw: RawFunding):
+            """一条腿的 (BookTop, 薄边名义额)。取不到深度退回一档，两者都取不到返回 None。"""
+            key = (raw.venue, raw.symbol)
+            if key not in depth_cache:
+                try:
+                    depth_cache[key] = await self.fetch_depth(raw.venue, raw.symbol)
+                except Exception:
+                    depth_cache[key] = None
+            d = depth_cache[key]
+            if d is not None:
+                return d.to_book_top(), float(d.thinner_side)
+            try:
+                book = await self.fetch_book(raw.venue, raw.symbol)
+            except Exception:
+                return None
+            if book is None:
+                return None
+            return book, min(float(book.bid_qty) * float(book.bid_price),
+                             float(book.ask_qty) * float(book.ask_price))
+
         for base, rows in ranked_bases:
             if len(scored) >= top_n:
                 break
             hourly = sorted(rows, key=lambda r: float(r.rate) / max(r.interval_h, 1e-9))
-            long_raw, short_raw = hourly[0], hourly[-1]
-            if long_raw.venue is short_raw.venue:
-                continue
 
-            # 拉多档深度。只用一档会把容量低估一两个数量级，
-            # 把真实可做的机会误判成"做不了"。
-            depths = await asyncio.gather(
-                self.fetch_depth(long_raw.venue, long_raw.symbol),
-                self.fetch_depth(short_raw.venue, short_raw.symbol),
-                return_exceptions=True)
-            depths = [d if not isinstance(d, Exception) else None for d in depths]
+            # **极端对优先，极端腿没盘口时退而求其次。** 曾经每个 base 只试
+            # "费率最低 vs 最高"一对，极端腿盘口是空的就把整个 base 扔掉：
+            # PENDLE 因 Gate 腿带宽内只有 $39 整币出局，而"币安多/BP 空"那对
+            # 费差 120% 年化、两边都是深盘，连看都没被看一眼。费率极端的腿
+            # 往往正是盘子最小的腿——只试极端对会系统性错过"次优费差 × 真实
+            # 深度"的组合。每 base 最多试 MAX_PAIR_COMBOS 组，深度有缓存，
+            # 额外的限频代价有上界。
+            combos = [(lo, hi)
+                      for i, lo in enumerate(hourly)
+                      for hi in hourly[i + 1:]
+                      if lo.venue is not hi.venue]
+            combos.sort(key=lambda p: -(float(p[1].rate) / max(p[1].interval_h, 1e-9)
+                                        - float(p[0].rate) / max(p[0].interval_h, 1e-9)))
 
-            if all(d is not None for d in depths):
-                long_book, short_book = (d.to_book_top() for d in depths)
-                # 对冲要两个方向都吃得下，所以按两侧较薄的一边算
-                sides = [float(d.thinner_side) for d in depths]
-            else:
-                # 深度取不到就退回一档——容量会偏低，但不至于让机会消失
-                books = await asyncio.gather(
-                    self.fetch_book(long_raw.venue, long_raw.symbol),
-                    self.fetch_book(short_raw.venue, short_raw.symbol),
-                    return_exceptions=True)
-                if any(isinstance(b, Exception) or b is None for b in books):
+            picked = None
+            for long_raw, short_raw in combos[:MAX_PAIR_COMBOS]:
+                pair_books = await asyncio.gather(
+                    leg_book(long_raw), leg_book(short_raw))
+                if any(b is None for b in pair_books):
                     continue
-                long_book, short_book = books
-                sides = [min(float(b.bid_qty) * float(b.bid_price),
-                             float(b.ask_qty) * float(b.ask_price))
-                         for b in (long_book, short_book)]
-
-            # 深度为 0 不能当成"没限制"——scoring 里 depth_cap<=0 会跳过容量判断，
-            # 等于按用户填的仓位放行。真读到 0 就是真没盘口，直接跳过。
-            if any(s <= 0 for s in sides):
+                (long_book, side_l), (short_book, side_s) = pair_books
+                sides = [side_l, side_s]
+                # 深度为 0 不能当成"没限制"——scoring 里 depth_cap<=0 会跳过
+                # 容量判断，等于按用户填的仓位放行。真读到 0 就是真没盘口。
+                if any(s <= 0 for s in sides):
+                    continue
+                thinnest = min(sides)
+                # 主流币无论如何都留下——它可能费率差很小、判"勉强"，
+                # 但那是给用户的信息，不该由我替他删掉
+                if thinnest < MIN_TOP_NOTIONAL and base not in MAJORS:
+                    continue
+                picked = (long_raw, short_raw, long_book, short_book, sides, thinnest)
+                break
+            if picked is None:
                 continue
-            thinnest = min(sides)
-            # 主流币无论如何都留下——它可能费率差很小、判"勉强"，
-            # 但那是给用户的信息，不该由我替他删掉
-            if thinnest < MIN_TOP_NOTIONAL and base not in MAJORS:
-                continue
+            long_raw, short_raw, long_book, short_book, sides, thinnest = picked
 
             # **按你实际放得进去的仓位评分**，而不是用户填的名义值。
             # 拿 5 万去评一个容量 70 刀的机会，算出来的负年化毫无信息量——
