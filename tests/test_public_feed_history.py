@@ -367,3 +367,16 @@ def test_normalize_base_existing_venues_unchanged():
     assert normalize_base("BTC_USDT", Venue.GATE) == "BTC"
     assert normalize_base("1000PEPEUSDT", Venue.BINANCE) == "PEPE"
     assert normalize_base("SHIB_USDT", Venue.GATE) == "SHIB"
+
+
+def test_normalize_base_backpack_usdc_suffix():
+    """Backpack 计价是 USDC（BTC_USDC_PERP）。_PERP 共享表剥掉后剩 BTC_USDC，
+    USDC 只能按 venue 剥——塞进共享表会给别家的 USDC 本位符号开误剥口子。"""
+    from carryfarm.models import Venue
+    from carryfarm.public_feed import normalize_base
+
+    assert normalize_base("BTC_USDC_PERP", Venue.BACKPACK) == "BTC"
+    assert normalize_base("SOL_USDC_PERP", Venue.BACKPACK) == "SOL"
+    assert normalize_base("1000PEPE_USDC_PERP", Venue.BACKPACK) == "PEPE"
+    # 别家不受影响：USDC 不在共享后缀表里
+    assert normalize_base("BTCUSDC", Venue.BINANCE) == "BTCUSDC"

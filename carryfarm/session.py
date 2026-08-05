@@ -44,6 +44,9 @@ CREDENTIAL_FIELDS: dict[Venue, tuple[str, ...]] = {
     # 用户看到的是 VENUE_FIELD_LABELS 里的中文，不会被字段名误导。
     Venue.HYPERLIQUID: ("api_key", "api_secret"),
     Venue.KUCOIN: ("api_key", "api_secret", "passphrase"),
+    # Backpack 的"API Key"是 base64 的 ED25519 **公钥**，secret 是同对**私钥**——
+    # 不是 HMAC 那种共享密钥。字段名沿用，显示名在 VENUE_FIELD_LABELS 里说清
+    Venue.BACKPACK: ("api_key", "api_secret"),
 }
 
 FIELD_LABELS = {
@@ -58,6 +61,10 @@ VENUE_FIELD_LABELS: dict[Venue, dict[str, str]] = {
     Venue.HYPERLIQUID: {
         "api_key": "主钱包地址（0x…）",
         "api_secret": "API Wallet 私钥（网页授权生成，不是主钱包私钥）",
+    },
+    Venue.BACKPACK: {
+        "api_key": "API Key（base64 的 ED25519 公钥）",
+        "api_secret": "API Secret（base64 的 ED25519 私钥）",
     },
 }
 
@@ -88,6 +95,9 @@ def _adapter_class(venue: Venue):
     if venue is Venue.KUCOIN:
         from .exchanges.kucoin import KucoinAdapter
         return KucoinAdapter
+    if venue is Venue.BACKPACK:
+        from .exchanges.backpack import BackpackAdapter
+        return BackpackAdapter
     raise SessionError(f"未知交易所: {venue}")
 
 

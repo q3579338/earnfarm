@@ -28,6 +28,7 @@ class Venue(str, enum.Enum):
     # 枚举和它的各处映射必须同一个提交落地。
     HYPERLIQUID = "hyperliquid"
     KUCOIN = "kucoin"
+    BACKPACK = "backpack"
 
 
 class MarketKind(str, enum.Enum):

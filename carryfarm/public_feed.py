@@ -60,6 +60,8 @@ DEFAULT_TAKER = {
     Venue.HYPERLIQUID: 0.00045,
     # contracts/active 的 takerFeeRate（XBTUSDTM 实测 6.0E-4）
     Venue.KUCOIN: 0.0006,
+    # 挂牌基础档 taker 0.05%（EU support 文本版费率表 + 第三方交叉核实）
+    Venue.BACKPACK: 0.0005,
 }
 
 # 深度统计带宽。各家盘口接口返回的档位数不同，统一按这个带宽估可见深度。
@@ -176,6 +178,14 @@ def normalize_base(symbol: str, venue: Venue) -> str:
     # 塞进下面六家共用的后缀表等于给别家开新的误剥口子
     if venue is Venue.KUCOIN and len(s) > 1 and s.endswith("M"):
         s = s[:-1]
+    # Backpack 计价货币是 USDC（BTC_USDC_PERP）。_PERP 共享表会剥，
+    # 剩下的 _USDC 只能按 venue 剥——USDC 后缀塞进共享表会误伤别家的
+    # USDC 本位合约符号（那些家的 USDC 合约根本没接进来，宁可窄）
+    if venue is Venue.BACKPACK:
+        for suffix in ("_USDC_PERP", "_USDC"):
+            if s.endswith(suffix) and len(s) > len(suffix):
+                s = s[: -len(suffix)]
+                break
     # 必须循环剥：OKX 的 BTC-USDT-SWAP 要连剥两次（-SWAP 再 -USDT），
     # 只剥一次会得到 "BTC-USDT"，跟别家的 "BTC" 配不上对——
     # 结果就是 OKX 的币全部无法参与跨所配对。

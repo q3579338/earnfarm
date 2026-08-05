@@ -117,6 +117,12 @@ VENUE_LIMITS: Mapping[Venue, VenueHistoryLimit] = {
         0, 0, 1000,
         "公开 /contract/funding-rates 按时间窗翻、返回**降序**（适配器已反转成升序）；"
         "文档没写公开端点的保留上限（UNVERIFIED；私有版明确只留 6 个月）"),
+    Venue.BACKPACK: VenueHistoryLimit(
+        0, 0, 1000,
+        "公开 /api/v1/fundingRates 按 limit/offset 翻、降序最新在前（适配器已反转"
+        "升序并丢掉未结算的当前周期行）；单页上限 10000、保留深度未见上限"
+        "（UNVERIFIED）；历史桶 30 req/min 是否含本端点 UNVERIFIED，适配器跨页"
+        "自限 2.1s/页"),
 }
 
 _FALLBACK_LIMIT = VenueHistoryLimit(90, 0, 1000, "未知交易所，按 90 天保守处理")
@@ -130,6 +136,8 @@ _FALLBACK_LIMIT = VenueHistoryLimit(90, 0, 1000, "未知交易所，按 90 天�
 # 默认空 = 不节流：单个品种的按需回填根本用不上，一次性上百次调用才需要。
 DEFAULT_PACE_S: Mapping[str, float] = {
     "binance:perp": 0.65,
+    # 30 req/min 的历史桶是否覆盖 fundingRates 端点 UNVERIFIED，按最坏情况压
+    "backpack:perp": 2.1,
 }
 
 

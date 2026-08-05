@@ -33,6 +33,7 @@ VENUE_LABELS = {
     Venue.BITGET: "Bitget",
     Venue.HYPERLIQUID: "Hyperliquid（链上）",
     Venue.KUCOIN: "KuCoin",
+    Venue.BACKPACK: "Backpack",
 }
 
 # 各家配 API key 时的必做项。这些是踩出来的，写在界面上比写在文档里有用得多。
@@ -51,6 +52,8 @@ VENUE_SETUP_HINTS = {
                        "注意 agent 有有效期，过期后要重新授权。",
     Venue.KUCOIN: "创建 API 时勾「通用」+「合约交易」，Passphrase 是你自己设的那句话。"
                   "合约走 api-futures 域名，key 是通用的。",
+    Venue.BACKPACK: "设置页生成 API Key 时会给一对 ED25519 密钥（都是 base64），"
+                    "公钥当 Key、私钥当 Secret。没有 passphrase。",
 }
 
 
