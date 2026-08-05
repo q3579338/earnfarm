@@ -254,3 +254,91 @@ def test_depth_message_does_not_claim_user_input():
     op = score_pair("Z", long, short, z, h, notional=500_000,
                     horizon_h=168, now_ts=NOW, hourly_carry=[0.0005] * 400)
     assert not any("你填了" in r for r in op.reasons)
+
+
+def _prior_pair(depth: float):
+    """一条真能赚钱、但一条历史都没有的机会。depth 是唯一变量。
+
+    两条腿除了盘口深度完全一致——这样"深度"就是判决差异的唯一解释变量，
+    对照组一跑就知道降级闸有没有被绕过去。
+    """
+    short = make_leg(symbol="P-A", funding=0.003, taker=0.0002,
+                     depth=depth, top_size_usd=depth / 10)
+    long = make_leg(symbol="P-B", market="okx:perp", funding=-0.003, taker=0.0002,
+                    depth=depth, top_size_usd=depth / 10)
+    z = HistoryStats(rates=(), interval_h=8.0)
+    return score_pair("P", long, short, z, z, notional=50_000,
+                      horizon_h=72, now_ts=NOW, hourly_carry=[])
+
+
+def test_depth_cap_cannot_bypass_the_prior_downgrade():
+    """深度限仓不得把"历史不足"这条降级顶掉。
+
+    这是真实事故：守护模式推过一条 SKHYNIX——零历史、同号中位存续 0 小时——
+    判决 sized_down，一路穿过 alerts.require_actionable 推到手机上。
+    根因是所有降级都写作 `if verdict == "good"`，而深度分支抢在它们前面
+    把 verdict 置成了 sized_down。表现出来就是**仓位越小越像好机会**，
+    正好把这个工具自己的结论顶反。
+    """
+    thin, deep = _prior_pair(30_000.0), _prior_pair(5_000_000.0)
+
+    assert thin.stability.is_prior and deep.stability.is_prior
+    assert thin.net_apr > 0 and deep.net_apr > 0, "这个用例要真能赚才有意义"
+    # 深度充足的那条历来判 marginal；深度受限的必须判成同一档
+    assert deep.verdict == "marginal"
+    assert thin.verdict == "marginal", (
+        f"深度限仓把历史不足的降级绕过去了：{thin.verdict} / {thin.reasons}")
+    assert not thin.is_actionable, "零历史的行绝不能进 is_actionable"
+    assert any("历史数据不足" in r for r in thin.reasons)
+    # 已经被降级了就不许再说"收益仍然成立"——那是给 sized_down 用的话
+    assert not any("收益仍然成立" in r for r in thin.reasons)
+
+
+def test_depth_cap_cannot_bypass_the_min_apr_threshold():
+    """深度限仓不得把"净年化低于门槛"这条顶掉，理由也不许消失。
+
+    原来这条判定挂在深度分支的 elif 上，深度一命中就整条跳过：
+    净年化 0.01% 的机会因为盘口浅反而变成"可做"，而且理由里连
+    "低于门槛"都不显示——用户只看到"按这个仓位做，收益仍然成立"。
+    """
+    def pair(depth: float, funding: float):
+        # top_size_usd 两边都给足：滑点由它决定，而这里要单独变的是
+        # depth_notional（容量闸看的是它），两个变量搅在一起就说不清是谁造成的差异
+        short = make_leg(symbol="Q-A", funding=funding, taker=0.0002,
+                         depth=depth, top_size_usd=200_000.0)
+        long = make_leg(symbol="Q-B", market="okx:perp", funding=-funding,
+                        taker=0.0002, depth=depth, top_size_usd=200_000.0)
+        h = HistoryStats(rates=tuple([funding] * 90), interval_h=8.0)
+        z = HistoryStats(rates=tuple([-funding] * 90), interval_h=8.0)
+        return score_pair("Q", long, short, z, h, notional=50_000,
+                          horizon_h=72, now_ts=NOW,
+                          hourly_carry=[0.00001] * 200, min_net_apr=0.05)
+
+    # 二分找一个净年化恰好落在 (0, 门槛) 之间的费率。写死一个数会随成本模型改动
+    # 而失效，而这个用例的重点从来不是那个数，是两种深度下判决必须一致
+    lo, hi = 0.0, 0.001
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if pair(5_000_000.0, mid).net_apr < 0:
+            lo = mid
+        else:
+            hi = mid
+    funding = hi * 1.001
+
+    thin, deep = pair(30_000.0, funding), pair(5_000_000.0, funding)
+    assert 0 < thin.net_apr < 0.05, "这个用例要落在 (0, 门槛) 之间才有意义"
+    assert deep.verdict == "marginal"
+    assert thin.verdict == "marginal", (
+        f"深度限仓把门槛判定跳过去了：{thin.verdict} / {thin.reasons}")
+    assert any("低于门槛" in r for r in thin.reasons), (
+        f"理由里必须留下「为什么不能做」：{thin.reasons}")
+
+
+def test_prior_rows_are_never_actionable():
+    """watch.alert_opportunities 的注释保证过：历史不足的行会被降级成 marginal，
+    因此 require_actionable 会把它挡在告警之外。这条不变量必须由测试锁住——
+    它是"别把用户训练成无视推送"的最后一道闸。"""
+    for depth in (2_000.0, 30_000.0, 500_000.0, 5_000_000.0):
+        op = _prior_pair(depth)
+        assert not op.is_actionable, (
+            f"depth={depth} 时零历史的行变成了可做：{op.verdict}")

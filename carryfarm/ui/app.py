@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import time
 
 from nicegui import app as ng_app, ui
 
 from decimal import Decimal
 
-from ..config import Config, load as load_config
+from ..config import MIN_MARKET_INTERVAL_S, Config, load as load_config
 from ..history import DEFAULT_PACE_S, HistoryBackfiller
 from ..models import Venue
 from ..paper import PaperGateway
@@ -45,6 +46,21 @@ HISTORY_CONCURRENCY = 3
 # 断开导致 finally 没跑到），强行放行下一轮——否则界面会永远停在"正在拉取"。
 STUCK_REFRESH_S = 300.0
 
+# 自动刷新可选的间隔。**最短 3 分钟不是保守，是硬下限**：一轮完整刷新实测约 105 秒
+# （六家全市场费率 + 逐对深度），配得比这还短的唯一后果是永远在刷新、并且把六家的
+# 限频配额全花在自己身上。这里的下限跟守护模式共用 config.MIN_MARKET_INTERVAL_S，
+# 两处配一个数才不会出现"界面能配 1 分钟、守护模式却拒绝启动"的鬼故事。
+REFRESH_INTERVAL_CHOICES = (180, 300, 600, 900, 1800, 3600)
+DEFAULT_REFRESH_INTERVAL_S = 300
+# 自动刷新的开关与间隔存在库的 meta 表里：这是**用户的选择**，不是运行时状态，
+# 重启一次就忘掉的设置等于没有设置。
+META_AUTO_REFRESH = "ui:auto_refresh"
+META_REFRESH_INTERVAL = "ui:refresh_interval_s"
+
+
+def _interval_label(seconds: int) -> str:
+    return f"{seconds // 60} 分钟" if seconds < 3600 else f"{seconds // 3600} 小时"
+
 
 class AppState:
     """界面共享的运行时状态。"""
@@ -57,6 +73,11 @@ class AppState:
         self.refreshing = False
         self.refresh_started_at: float = 0.0
         self.feed_error = ""
+        # 状态文案存在共享状态里，各客户端的定时器自己同步过去。
+        # 只往触发那一轮的客户端的标签里写，别的标签页会永远是空白
+        self.feed_status_text = ""
+        self.feed_status_color = theme.NEUTRAL
+        self.history_status_color = theme.NEUTRAL
         self.venues_ok: list[str] = []
         # 建不起来 / 拉不到数据的交易所 → 原因。空 dict = 六家都给了数据
         self.venues_failed: dict[str, str] = {}
@@ -70,14 +91,59 @@ class AppState:
         self._history_adapters: dict[Venue, object] = {}
         self.backfiller: HistoryBackfiller | None = None
         # 两轮刷新之间的最小间隔。一轮实测约 105 秒（六家全市场费率 + 逐对深度），
-        # 留出富余免得把交易所的限频配额全花在自己身上
-        self.min_refresh_gap_s: float = 180.0
+        # 留出富余免得把交易所的限频配额全花在自己身上。
+        # 用户可以在机会榜上改，改完存库；这里读的是上次存的值
+        self.auto_refresh: bool = True
+        self.min_refresh_gap_s: float = float(DEFAULT_REFRESH_INTERVAL_S)
+        self._load_refresh_prefs()
         self.history_days = DEFAULT_HISTORY_DAYS
         self.history_busy = False
         self.history_done_at: float = 0.0
         self.history_seen: set[tuple[str, str]] = set()   # 已补过的 (market, symbol)
         self.history_status = ""
         self.history_task: asyncio.Task | None = None
+
+    # ---- 自动刷新 ----
+
+    def _load_refresh_prefs(self) -> None:
+        """从库里读回上次的选择。读坏了就退回默认值——
+        一条脏 meta 不该让界面起不来。"""
+        try:
+            saved = self.session.storage.get_meta(META_AUTO_REFRESH)
+            if saved is not None:
+                self.auto_refresh = saved == "1"
+            raw = self.session.storage.get_meta(META_REFRESH_INTERVAL)
+            if raw:
+                # 存进来的值必须落回下拉框的某个选项上，否则下拉框会显示空白——
+                # 用户看到一个没有值的间隔框，只能猜它到底几分钟刷一次
+                want = self._clamp_interval(float(raw))
+                self.min_refresh_gap_s = float(
+                    min(REFRESH_INTERVAL_CHOICES, key=lambda s: abs(s - want)))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _clamp_interval(seconds: float) -> float:
+        """低于硬下限一律抬回下限。**不接受用户把它配到 1 分钟**：
+        一轮要 105 秒，配 60 秒等于让它永远在刷新，而且六家的限频配额会被自己吃光。"""
+        return max(float(MIN_MARKET_INTERVAL_S), float(seconds))
+
+    def set_auto_refresh(self, enabled: bool) -> None:
+        self.auto_refresh = bool(enabled)
+        with contextlib.suppress(Exception):
+            self.session.storage.set_meta(META_AUTO_REFRESH, "1" if enabled else "0")
+
+    def set_refresh_interval(self, seconds: float) -> None:
+        self.min_refresh_gap_s = self._clamp_interval(seconds)
+        with contextlib.suppress(Exception):
+            self.session.storage.set_meta(META_REFRESH_INTERVAL,
+                                          str(int(self.min_refresh_gap_s)))
+
+    def next_refresh_in_s(self) -> float:
+        """距下次自动刷新还有多少秒。负数/0 = 下一拍就会走。"""
+        if not self.auto_refresh or self.refreshing or not self.last_refresh:
+            return 0.0
+        return max(0.0, self.last_refresh + self.min_refresh_gap_s - time.time())
 
     def ensure_backfiller(self) -> HistoryBackfiller:
         """惰性建回填器。用的是 Session 的库——历史资金费是公开数据，
@@ -149,14 +215,12 @@ async def refresh_opportunities(state: AppState, status: ui.label,
     if state.refreshing:
         if time.time() - state.refresh_started_at < STUCK_REFRESH_S:
             return
-        status.text = "上一轮刷新卡住了，重新开始…"
-        status.style(f"color:{theme.WARN}")
+        _set_feed_status(state, status, "上一轮刷新卡住了，重新开始…", theme.WARN)
 
     state.refreshing = True
     state.refresh_started_at = time.time()
     spinner.set_visibility(True)
-    status.text = "正在从六家交易所拉取实时资金费率…"
-    status.style(f"color:{theme.NEUTRAL}")
+    _set_feed_status(state, status, "正在从六家交易所拉取实时资金费率…")
     try:
         state.set_history_days(_history_days_for(state.board.filters.horizon_h))
         async with PublicFeed(backfiller=state.ensure_backfiller(),
@@ -183,13 +247,14 @@ async def refresh_opportunities(state: AppState, status: ui.label,
         # 先出榜。历史后台补，补完再刷新评分
         state.board.set_rows(rows)
         state.last_refresh = time.time()
-        status.text = (f"已连 {len(state.venues_ok)} 家：{'、'.join(state.venues_ok)}"
-                       f"　·　{time.strftime('%H:%M:%S')} 更新")
+        ok_text = (f"已连 {len(state.venues_ok)} 家：{'、'.join(state.venues_ok)}"
+                   f"　·　{time.strftime('%H:%M:%S')} 更新")
         if state.venues_failed:
-            status.text += f"　·　{'、'.join(state.venues_failed)} 没取到数据"
-            status.style(f"color:{theme.WARN}")
+            _set_feed_status(state, status,
+                             ok_text + f"　·　{'、'.join(state.venues_failed)} 没取到数据",
+                             theme.WARN)
         else:
-            status.style(f"color:{theme.NEUTRAL}")
+            _set_feed_status(state, status, ok_text)
         if history_status is not None:
             _set_history_status(state, history_status,
                                 f"历史 {hits}/{total} 条腿" if total else "")
@@ -199,8 +264,7 @@ async def refresh_opportunities(state: AppState, status: ui.label,
                 backfill_history(state, rows, history_status))
     except Exception as exc:
         state.feed_error = str(exc)
-        status.text = f"拉取失败：{exc}"
-        status.style(f"color:{theme.DANGER}")
+        _set_feed_status(state, status, f"拉取失败：{exc}", theme.DANGER)
     finally:
         state.refreshing = False
         spinner.set_visibility(False)
@@ -212,11 +276,27 @@ async def refresh_opportunities(state: AppState, status: ui.label,
 _history_days_for = history_days_for
 
 
+def _set_feed_status(state: AppState, label: ui.label, text: str,
+                     color: str | None = None) -> None:
+    """状态文案要**先进共享状态、再进标签**。
+
+    一轮刷新只由某一个客户端触发，而 status 标签是**每个客户端各建一份**的。
+    只写标签的话，另开的标签页（或刷新后重连的那个）状态栏会永远空着——
+    它既没触发过刷新，也就永远不会有人往它的标签里写字，
+    界面看起来就像"卡在什么都没有"。存进 state，各客户端的定时器自己去同步。
+    """
+    state.feed_status_text = text
+    state.feed_status_color = color or theme.NEUTRAL
+    label.text = text
+    label.style(f"color:{state.feed_status_color}")
+
+
 def _set_history_status(state: AppState, label: ui.label, text: str,
                         color: str | None = None) -> None:
     state.history_status = text
+    state.history_status_color = color or theme.NEUTRAL
     label.text = f"　·　{text}" if text else ""
-    label.style(f"color:{color or theme.NEUTRAL}")
+    label.style(f"color:{state.history_status_color}")
 
 
 async def backfill_history(state: AppState, rows, history_status: ui.label) -> None:
@@ -372,6 +452,18 @@ def build(config: Config, offline: bool = False,
                 feed_spinner = ui.spinner(size="sm")
                 feed_spinner.set_visibility(False)
                 ui.space()
+                # 倒计时不是装饰：自动刷新是个后台行为，不显示"还有多久"的话，
+                # 用户唯一能确认它还活着的办法是盯着时间戳等——那还不如手动点
+                next_label = ui.label().classes("text-xs mr-1") \
+                    .style(f"color:{theme.NEUTRAL}")
+                auto_switch = ui.switch("自动", value=state.auto_refresh) \
+                    .props("dense").tooltip("按下面的间隔自动重拉行情")
+                interval_select = ui.select(
+                    {s: _interval_label(s) for s in REFRESH_INTERVAL_CHOICES},
+                    value=int(state.min_refresh_gap_s),
+                ).props("dense outlined").classes("w-28") \
+                    .tooltip(f"两轮之间至少隔多久。一轮实测约 105 秒，"
+                             f"所以最短只能配到 {int(MIN_MARKET_INTERVAL_S) // 60} 分钟")
                 refresh_btn = ui.button(
                     "刷新行情", icon="refresh",
                     on_click=lambda: refresh_opportunities(
@@ -384,10 +476,66 @@ def build(config: Config, offline: bool = False,
                 feed_status.text = "离线模式：显示的是演示数据，不是真实行情"
                 feed_status.style(f"color:{theme.WARN}")
                 refresh_btn.set_enabled(False)
+                # 离线模式下自动刷新没有意义，控件一并禁掉——
+                # 留着一个转不动的开关只会让人以为是坏了
+                auto_switch.set_enabled(False)
+                interval_select.set_enabled(False)
+                next_label.text = ""
             else:
                 def tick():
                     return refresh_opportunities(state, feed_status, feed_spinner,
                                                  history_status)
+
+                def on_auto_change(e) -> None:
+                    state.set_auto_refresh(bool(e.value))
+                    interval_select.set_enabled(state.auto_refresh)
+                    render_countdown()
+
+                def on_interval_change(e) -> None:
+                    state.set_refresh_interval(float(e.value))
+                    render_countdown()
+
+                auto_switch.on_value_change(on_auto_change)
+                interval_select.on_value_change(on_interval_change)
+                interval_select.set_enabled(state.auto_refresh)
+
+                def sync_from_state() -> None:
+                    """把共享状态同步到**本客户端**的标签上。
+
+                    多开一个标签页、或刷新后重连，那个客户端从来没触发过刷新，
+                    也就没人往它的标签里写过字。不同步的话它会一直停在
+                    "还没拉到行情"，而榜单其实早就有数据了。"""
+                    if feed_status.text != state.feed_status_text:
+                        feed_status.text = state.feed_status_text
+                        feed_status.style(f"color:{state.feed_status_color}")
+                    want = f"　·　{state.history_status}" if state.history_status else ""
+                    if history_status.text != want:
+                        history_status.text = want
+                        history_status.style(f"color:{state.history_status_color}")
+                    feed_spinner.set_visibility(state.refreshing)
+
+                def render_countdown() -> None:
+                    sync_from_state()
+                    if not state.auto_refresh:
+                        next_label.text = "自动刷新已关"
+                        return
+                    if state.refreshing:
+                        ran = time.time() - state.refresh_started_at
+                        # 一轮实测约 105 秒。明显超时多半是上一轮的页面被销毁、
+                        # finally 没跑到，标志卡在 True——refresh_opportunities 的
+                        # 自愈分支是**静默 return** 的，重载后的新页面状态栏一片空白，
+                        # 用户只会觉得"它挂了"。这里把那段等待说出来
+                        if ran > STUCK_REFRESH_S / 2:
+                            left = int(STUCK_REFRESH_S - ran)
+                            next_label.text = f"上一轮像是卡住了，{left} 秒后强制重来"
+                        else:
+                            next_label.text = "刷新中…"
+                        return
+                    if not state.last_refresh:
+                        next_label.text = ""
+                        return
+                    left = int(state.next_refresh_in_s())
+                    next_label.text = f"下次自动刷新 {left // 60}:{left % 60:02d}"
 
                 # 启动即拉一次，之后**按实测耗时自适应**间隔。
                 # 固定 60 秒是错的：一轮要拉六家全市场费率再逐对拉深度，
@@ -396,13 +544,18 @@ def build(config: Config, offline: bool = False,
                 ui.timer(0.3, tick, once=True)
 
                 def adaptive_tick():
+                    render_countdown()
+                    if not state.auto_refresh:
+                        return          # 用户把自动关了，只更新倒计时文案
                     if state.refreshing:
                         return          # 上一轮还没跑完，这一拍直接跳过
                     if time.time() - state.last_refresh < state.min_refresh_gap_s:
                         return
                     return tick()
 
-                ui.timer(15.0, adaptive_tick)
+                # 5 秒一拍只是"看一眼要不要刷"，真正的节流是 min_refresh_gap_s。
+                # 拍子密一点是为了倒计时走得像秒表，而不是每 15 秒跳一次
+                ui.timer(5.0, adaptive_tick)
                 # 回填器的 httpx 连接池不跟着 PublicFeed 的生命周期走，得自己收
                 ng_app.on_shutdown(state.close_history)
 

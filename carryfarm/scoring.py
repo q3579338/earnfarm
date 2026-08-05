@@ -432,8 +432,6 @@ def score_pair(base: str, leg_a: LegQuote, leg_b: LegQuote,
     # 深度那条曾经无条件写"按这个仓位做，收益仍然成立"，而净年化在它之后才算，
     # 结果一行里同时出现"收益仍然成立"和"净年化 -15.1% 为负"。
     # 用户看到互相打架的解释，会连对的那条一起不信。
-    is_profitable = net_apr > 0
-
     if net_apr <= 0:
         verdict = "negative"
         reasons.append(f"净年化 {net_apr:.1%} 为负：毛收益 {gross_apr:.1%} "
@@ -442,23 +440,28 @@ def score_pair(base: str, leg_a: LegQuote, leg_b: LegQuote,
     # 深度不足不等于"这个机会不能做"——小币的高费率往往就是真肉，只是容量小。
     # 工具的职责是告诉你**最多能放多少**，而不是替你把机会删掉。
     # 只有当深度小到连最小可行仓位都撑不住时，才真的判不可执行。
+    #
+    # **这里只算容量，判决留到最后再下。** 曾经它在这里就把 verdict 置成 sized_down，
+    # 而后面每一条降级都写作 `if verdict == "good"`，于是被深度限住的机会
+    # 绕过了全部降级闸：同一条机会，深度充足判 marginal（不可做），
+    # 深度不足反而判 sized_down（可做）——仓位越小越像好机会，
+    # 正好把这个工具自己的结论（小容量才是手续费的重灾区）顶反了。
+    # 更糟的是 is_actionable 认 sized_down，告警的 require_actionable 就会把
+    # 零历史的行推到人手机上，而 watch.alert_opportunities 的注释保证过这不会发生。
     depth_cap = min(long.depth_notional, short.depth_notional)
     max_by_depth = MAX_PARTICIPATION * depth_cap if depth_cap > 0 else 0.0
-    if depth_cap > 0 and notional > max_by_depth:
+    capped_by_depth = depth_cap > 0 and notional > max_by_depth
+    if capped_by_depth:
         capacity = min(capacity, max_by_depth)
         if max_by_depth < MIN_VIABLE_NOTIONAL:
             verdict = "unexecutable"
+            # 已经不可执行了，后面不该再说"缩仓位就能做"
+            capped_by_depth = False
             reasons.append(f"深度只撑得住 ${max_by_depth:,.0f}，低于最小可行仓位 "
                            f"${MIN_VIABLE_NOTIONAL:,.0f}，手续费会把收益吃光")
-        elif is_profitable:
-            verdict = "sized_down" if verdict == "good" else verdict
-            reasons.append(f"深度限制：这个机会最多放 ${max_by_depth:,.0f}"
-                           f"（评分用的是 ${notional:,.0f}）。按这个仓位做，收益仍然成立")
-        else:
-            # 已经判负了，深度只是补充信息，不能再说"收益成立"
-            reasons.append(f"另外深度也只撑得住 ${max_by_depth:,.0f}")
-    elif net_apr < min_net_apr:
-        verdict = "marginal" if verdict == "good" else verdict
+
+    if net_apr < min_net_apr and verdict == "good":
+        verdict = "marginal"
         reasons.append(f"净年化 {net_apr:.1%} 低于门槛 {min_net_apr:.0%}")
     if n_short == 0 and n_long == 0:
         verdict = "negative"
@@ -480,6 +483,17 @@ def score_pair(base: str, leg_a: LegQuote, leg_b: LegQuote,
             verdict = "marginal"
         reasons.append(f"该费差历史同号中位只活 {stab.median_run_h:.0f} 小时，"
                        f"回本要 {be_h:.0f} 小时，大概率撑不到")
+
+    # 深度判决最后下：此刻 verdict 已经吸收了上面全部降级，
+    # "按这个仓位做，收益仍然成立"这句话只会落在真的还成立的行上。
+    if capped_by_depth:
+        if verdict == "good":
+            verdict = "sized_down"
+            reasons.append(f"深度限制：这个机会最多放 ${max_by_depth:,.0f}"
+                           f"（评分用的是 ${notional:,.0f}）。按这个仓位做，收益仍然成立")
+        else:
+            # 已经被别的理由降级了，深度只是补充信息，不能再说"收益成立"
+            reasons.append(f"另外深度也只撑得住 ${max_by_depth:,.0f}")
 
     if not reasons:
         reasons.append(f"净年化 {net_apr:.1%}，{be_h:.0f} 小时回本，"
