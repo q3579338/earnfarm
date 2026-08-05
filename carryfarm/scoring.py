@@ -192,17 +192,64 @@ def slippage_rate(leg: LegQuote, side: str, notional: float,
     return eta * (s + (excess / notional) * (excess / (2 * rho)))
 
 
+# ---- 成交方式 -----------------------------------------------------------
+# 默认双边吃单。挂单能省手续费、还能不穿价差，但挂单**不保证成交**：
+# 被动腿成交到主动腿补上之间，你是单腿裸露在标的价格上的。
+# 这几个口径的存在意义是让人看清那笔账，不是给人一个更好看的数字。
+FILL_TAKER = "taker"            # 双边吃单
+FILL_MAKER_ONE = "maker_one"    # 单边挂单：省得最多的那条腿挂，另一条腿吃单对冲
+FILL_MAKER_BOTH = "maker_both"  # 双边挂单：两条腿都挂
+FILL_MODES = (FILL_TAKER, FILL_MAKER_ONE, FILL_MAKER_BOTH)
+
+
+def _leg_entry_cost(leg: LegQuote, side: str, notional: float, *,
+                    passive: bool) -> float:
+    """开仓这一笔的成本。passive=挂单成交：付 maker 费、且不穿价差。
+
+    挂单不穿价差不是优待，是定义——你就是价差本身，成交价即你的挂价。
+    maker 为负（返佣）时这里自然变成负成本，正是该有的样子。
+    """
+    if passive:
+        return leg.maker_fee
+    return leg.taker_fee + slippage_rate(leg, side, notional)
+
+
 def roundtrip_cost(long: LegQuote, short: LegQuote, notional: float,
-                   transfer_amort: float = 0.0) -> float:
+                   transfer_amort: float = 0.0,
+                   fill_mode: str = FILL_TAKER) -> float:
     """开+平共四笔的总成本（占名义比例）。
 
     紧急度系数只乘滑点、不乘手续费——手续费是固定费率，不会因为你急而变贵。
+
+    **挂单只作用于开仓，平仓一律按吃单算。** 这不是保守，是平仓的时机通常
+    不由你决定：费率翻转、爆仓距离触线、一条腿被强平——真要平的时候你没有
+    挂在那里等成交的余裕。CLOSE_URGENCY 这个系数本来就是为这件事存在的，
+    再把平仓也算成挂单，等于把这个系数的意义抵消掉。
     """
-    open_cost = (long.taker_fee + slippage_rate(long, "buy", notional)
-                 + short.taker_fee + slippage_rate(short, "sell", notional))
+    passive_long, passive_short = passive_legs(long, short, notional, fill_mode)
+    open_cost = (_leg_entry_cost(long, "buy", notional, passive=passive_long)
+                 + _leg_entry_cost(short, "sell", notional, passive=passive_short))
     close_cost = (long.taker_fee + CLOSE_URGENCY * slippage_rate(long, "sell", notional)
                   + short.taker_fee + CLOSE_URGENCY * slippage_rate(short, "buy", notional))
     return open_cost + close_cost + transfer_amort
+
+
+def passive_legs(long: LegQuote, short: LegQuote, notional: float,
+                 fill_mode: str) -> tuple[bool, bool]:
+    """这个口径下哪几条腿是挂单。返回 (多腿是否挂单, 空腿是否挂单)。
+
+    单边挂单挂在**省得最多**的那条腿上：两条腿的 taker 费和滑点经常差一倍，
+    挂错边等于白挂。哪条腿被挂要能带到界面上——用户得知道这个数假设了什么。
+    """
+    if fill_mode == FILL_MAKER_BOTH:
+        return True, True
+    if fill_mode != FILL_MAKER_ONE:
+        return False, False
+    save_long = (long.taker_fee + slippage_rate(long, "buy", notional)
+                 - long.maker_fee)
+    save_short = (short.taker_fee + slippage_rate(short, "sell", notional)
+                  - short.maker_fee)
+    return (True, False) if save_long >= save_short else (False, True)
 
 
 def breakeven_hours(long: LegQuote, short: LegQuote,
@@ -360,6 +407,27 @@ class ScoredOpportunity:
     # 假装精确，正是这个工具要修的病。
     fee_basis: str = "default"
 
+    # ---- 成交方式（挂单口径） ----
+    # 这三个字段必须一路带到界面。挂单口径下的净年化是**上限**：它假设挂单
+    # 必成交。不把这个假设和它的代价一起显示出来，就是拿一个乐观模型骗自己——
+    # paper.py 里那句"一个乐观的模拟器比没有模拟器更危险"说的是同一件事。
+    fill_mode: str = FILL_TAKER
+    # 相对双边吃单省下的成本（占名义）。负数不可能出现——挂单只会更便宜
+    maker_saving: float = 0.0
+    # 挂单口径下会有多少钱单腿裸露（被动腿成交、对侧还没补上的那段时间）
+    naked_notional: float = 0.0
+    # 挂在哪条腿上，"long" / "short" / "both" / ""（双边吃单）
+    passive_side: str = ""
+
+    @property
+    def naked_breakeven_move(self) -> float:
+        """标的价格在裸奔窗口里反向走多少，就把挂单省下的钱全赔进去。
+
+        省下的钱和裸露的亏损都是**同一个名义额**的比例，所以这个数就等于
+        maker_saving 本身——不需要任何波动率假设，也就没有可以被调松的旋钮。
+        """
+        return self.maker_saving
+
     @property
     def is_actionable(self) -> bool:
         """能做就是能做——只是仓位要按 capacity_usd 缩。"""
@@ -385,7 +453,8 @@ def score_pair(base: str, leg_a: LegQuote, leg_b: LegQuote,
                *, notional: float, horizon_h: float, now_ts: float,
                kappa: float = 2.0, hourly_carry: Sequence[float] | None = None,
                min_net_apr: float = 0.05,
-               fee_basis: str = "default") -> ScoredOpportunity:
+               fee_basis: str = "default",
+               fill_mode: str = FILL_TAKER) -> ScoredOpportunity:
     """给一个跨所配对打分。
 
     fee_basis 只是把"两条腿的 taker_fee 是真实档位还是默认挂牌价"这个事实
@@ -394,7 +463,14 @@ def score_pair(base: str, leg_a: LegQuote, leg_b: LegQuote,
     long, short = orient(leg_a, leg_b)
     long_hist, short_hist = (hist_a, hist_b) if long is leg_a else (hist_b, hist_a)
 
-    cost_rt = roundtrip_cost(long, short, notional)
+    cost_rt = roundtrip_cost(long, short, notional, fill_mode=fill_mode)
+    # 省了多少：跟双边吃单比。容量、回本、判决全部用上面那个 cost_rt，
+    # 这里只是把"省下的部分"单独算出来给界面用
+    taker_cost = roundtrip_cost(long, short, notional)
+    maker_saving = max(0.0, taker_cost - cost_rt)
+    p_long, p_short = passive_legs(long, short, notional, fill_mode)
+    passive_side = ("both" if p_long and p_short else
+                    "long" if p_long else "short" if p_short else "")
     income, n_short, n_long = funding_income(long, short, long_hist, short_hist,
                                              horizon_h, now_ts)
     net = income - cost_rt
@@ -499,6 +575,19 @@ def score_pair(base: str, leg_a: LegQuote, leg_b: LegQuote,
         reasons.append(f"净年化 {net_apr:.1%}，{be_h:.0f} 小时回本，"
                        f"历史胜率 {stab.p_win:.0%}")
 
+    # 挂单口径的裸奔账单，**永远是理由的最后一条**：无论判决好坏，
+    # 只要成本是按挂单算的，它假设了什么就必须写在它旁边。
+    # 省下的钱和裸露的亏损同名义，所以"反向走 maker_saving 就白挂"是恒等式，
+    # 不含任何可调参数——这正是选它当警示的原因：没人能把它调乐观。
+    naked = notional if passive_side else 0.0
+    if passive_side and maker_saving > 0:
+        which = {"both": "两条腿都挂单", "long": "多腿挂单",
+                 "short": "空腿挂单"}[passive_side]
+        reasons.append(
+            f"挂单口径（{which}）：省 {maker_saving:.2%}，但这是假设必成交的上限。"
+            f"被动腿成交到对侧补上之间有 ${naked:,.0f} 单腿裸露，"
+            f"价格反向走 {maker_saving:.2%} 省的就全赔回去，之后每一步都是净亏")
+
     return ScoredOpportunity(
         base=base, long=long, short=short,
         gross_apr=gross_apr, net_apr=net_apr, cost_rt=cost_rt,
@@ -506,6 +595,8 @@ def score_pair(base: str, leg_a: LegQuote, leg_b: LegQuote,
         capacity_usd=capacity, notional=notional,
         verdict=verdict, reasons=tuple(reasons),
         fee_basis=fee_basis,
+        fill_mode=fill_mode, maker_saving=maker_saving,
+        naked_notional=naked, passive_side=passive_side,
     )
 
 

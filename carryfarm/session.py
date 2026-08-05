@@ -37,12 +37,28 @@ CREDENTIAL_FIELDS: dict[Venue, tuple[str, ...]] = {
     Venue.GATE: ("api_key", "api_secret"),
     Venue.BYBIT: ("api_key", "api_secret"),
     Venue.BITGET: ("api_key", "api_secret", "passphrase"),
+    # Hyperliquid 是链上 DEX，没有 api key/secret 这对概念。适配器的映射是：
+    # api_key = 主钱包地址（查询持仓用，公开信息）、api_secret = API Wallet 私钥
+    # （签名用，网页上由主账户授权生成）。字段名不改——vault 的存取、
+    # Credential 数据类、六家的界面全都按这两个名字走，改名的代价是全线迁移；
+    # 用户看到的是 VENUE_FIELD_LABELS 里的中文，不会被字段名误导。
+    Venue.HYPERLIQUID: ("api_key", "api_secret"),
+    Venue.KUCOIN: ("api_key", "api_secret", "passphrase"),
 }
 
 FIELD_LABELS = {
     "api_key": "API Key",
     "api_secret": "API Secret",
     "passphrase": "Passphrase",
+}
+
+# 按交易所覆盖字段的显示名。Hyperliquid 的"API Key"实际是主钱包地址，
+# 照六家的标签显示会让用户把私钥填进地址框——标签必须说人话。
+VENUE_FIELD_LABELS: dict[Venue, dict[str, str]] = {
+    Venue.HYPERLIQUID: {
+        "api_key": "主钱包地址（0x…）",
+        "api_secret": "API Wallet 私钥（网页授权生成，不是主钱包私钥）",
+    },
 }
 
 
@@ -66,6 +82,12 @@ def _adapter_class(venue: Venue):
     if venue is Venue.BITGET:
         from .exchanges.bitget import BitgetAdapter
         return BitgetAdapter
+    if venue is Venue.HYPERLIQUID:
+        from .exchanges.hyperliquid import HyperliquidAdapter
+        return HyperliquidAdapter
+    if venue is Venue.KUCOIN:
+        from .exchanges.kucoin import KucoinAdapter
+        return KucoinAdapter
     raise SessionError(f"未知交易所: {venue}")
 
 

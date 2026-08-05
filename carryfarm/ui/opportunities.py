@@ -62,15 +62,33 @@ class BoardFilters:
     hide_negative: bool = False
     include_small_caps: bool = False
     search: str = ""
+    # 成交方式（taker / maker_one / maker_both）。挂单口径的净年化是
+    # **假设必成交的上限**，评分会在理由里附上裸奔窗口的账单；
+    # 切换后必须整榜重评（改的是成本模型，不是过滤条件），
+    # 所以它不像其他字段那样只触发 render——上层挂了 on_rescore 回调
+    fill_mode: str = "taker"
 
 
 class OpportunityBoard:
+    """机会榜。**数据共享、渲染面按客户端登记。**
+
+    _rows 全局一份（AppState 级共享），但 summary/container 这些 ui 元素
+    必须每个客户端各留一份：任何一个对 / 的 HTTP GET（预览探测、健康检查、
+    爬虫）都会让 NiceGUI 在服务端 build 一次页面。字段要是单例的，
+    谁最后 build 谁抢走它——之后 set_rows 全渲染进那个幽灵客户端的容器里，
+    真正的浏览器页面永远停在"还没拉到行情"，而且没有任何报错。
+    render() 对所有登记过的客户端逐个画，画不进去的（连接已死）当场剔除。
+    """
+
     def __init__(self, on_create_hedge: Callable[[ScoredOpportunity], None] | None = None) -> None:
         self.filters = BoardFilters()
         self._on_create = on_create_hedge
         self._rows: list[ScoredOpportunity] = []
-        self._container: ui.element | None = None
-        self._summary: ui.label | None = None
+        # client_id -> {"summary": label, "container": column, "cap_slider": slider}
+        self._surfaces: dict[str, dict] = {}
+        # 成交方式切换时由上层重评整榜（成本模型变了，render 解决不了）。
+        # 不直接 import app 里的刷新函数——那是循环依赖
+        self.on_rescore: Callable[[], None] | None = None
 
     @property
     def rows(self) -> list[ScoredOpportunity]:
@@ -80,17 +98,21 @@ class OpportunityBoard:
     # ---- 构建 -----------------------------------------------------------
 
     def build(self) -> None:
+        surface: dict = {}
         with ui.column().classes("w-full gap-2 cf-mono"):
-            self._build_filters()
-            self._summary = ui.label().classes("text-xs").style(f"color:{theme.NEUTRAL}")
-            self._container = ui.column().classes("w-full gap-1")
+            self._build_filters(surface)
+            surface["summary"] = ui.label().classes("text-xs").style(f"color:{theme.NEUTRAL}")
+            surface["container"] = ui.column().classes("w-full gap-1")
+        # 按客户端 id 登记。同一个客户端不会 build 两次；不同客户端（包括
+        # 服务端渲染的幽灵）各占一格，render 时画不进去的自然被剔掉
+        self._surfaces[ui.context.client.id] = surface
         self.render()
 
-    def _build_filters(self) -> None:
+    def _build_filters(self, surface: dict) -> None:
         with ui.card().classes("w-full p-3"):
             with ui.row().classes("w-full items-center gap-6 flex-wrap"):
                 # 对数滑块：把"几个数量级"变成一次拖动，天然防手滑多打一个零
-                self._cap_slider = self._log_slider("能吃下 ≥", "min_capacity", 2, 7)
+                surface["cap_slider"] = self._log_slider("能吃下 ≥", "min_capacity", 2, 7)
 
                 with ui.column().classes("gap-0"):
                     ui.label("仓位规模").classes("text-xs").style(f"color:{theme.NEUTRAL}")
@@ -105,6 +127,17 @@ class OpportunityBoard:
                               value=int(self.filters.horizon_h),
                               on_change=lambda e: self._set("horizon_h", float(e.value))) \
                         .props("dense outlined").classes("w-28")
+
+                with ui.column().classes("gap-0"):
+                    ui.label("成交方式").classes("text-xs").style(f"color:{theme.NEUTRAL}")
+                    ui.select({"taker": "双边吃单", "maker_one": "单边挂单",
+                               "maker_both": "双边挂单"},
+                              value=self.filters.fill_mode,
+                              on_change=self._set_fill_mode) \
+                        .props("dense outlined").classes("w-28") \
+                        .tooltip("挂单省手续费、不穿价差，但不保证成交：被动腿成交到"
+                                 "对侧补上之间是单腿裸露的。挂单口径的净年化是假设"
+                                 "必成交的上限，每行的展开理由里有这笔账。")
 
                 ui.input(placeholder="币种…",
                          on_change=lambda e: self._set("search", (e.value or "").upper())) \
@@ -122,8 +155,16 @@ class OpportunityBoard:
 
     def _toggle_small_caps(self, e) -> None:
         self.filters.include_small_caps = e.value
-        # 容量滑块在小币模式下不起作用了，灰掉免得用户以为没生效
-        self._cap_slider.set_enabled(not e.value)
+        # 容量滑块在小币模式下不起作用了，灰掉免得用户以为没生效。
+        # 所有客户端一起灰：过滤器是共享状态，只灰自己那个会让另一个
+        # 标签页的滑块看起来还能用
+        for surface in list(self._surfaces.values()):
+            slider = surface.get("cap_slider")
+            if slider is not None:
+                try:
+                    slider.set_enabled(not e.value)
+                except Exception:
+                    pass          # 客户端已死，render 的清理会剔掉它
         self.render()
 
     def _log_slider(self, label: str, field: str, lo: int, hi: int):
@@ -146,6 +187,17 @@ class OpportunityBoard:
     def _set(self, field: str, value) -> None:
         setattr(self.filters, field, value)
         self.render()
+
+    def _set_fill_mode(self, e) -> None:
+        if e.value == self.filters.fill_mode:
+            return
+        self.filters.fill_mode = e.value
+        # 改的是成本模型：每一行的 cost_rt / 净年化 / 容量 / 判决全要重算，
+        # 只重渲染会让表头写着"挂单"而数字还是吃单的
+        if self.on_rescore is not None:
+            self.on_rescore()
+        else:
+            self.render()
 
     # ---- 数据 -----------------------------------------------------------
 
@@ -177,29 +229,28 @@ class OpportunityBoard:
     # ---- 渲染 -----------------------------------------------------------
 
     def render(self) -> None:
-        if self._container is None:
-            return
+        """对**每个**登记过的客户端渲染一遍，画不进去的当场剔除。
+
+        剔除必须发生在这里而不是断连回调里：服务端渲染的幽灵客户端
+        （HTTP 探测、爬虫）从来没连过 websocket，不会触发任何断连事件，
+        只有在真正往它的容器里画东西失败时才暴露出来。
+        """
         rows = self._visible()
-        self._container.clear()
+        summary = self._summary_text(rows)
+        for client_id, surface in list(self._surfaces.items()):
+            try:
+                self._render_into(surface, rows, summary)
+            except Exception:
+                # 容器的 slot 已经没了 = 客户端已死。剔掉，别让它把
+                # 后面活着的客户端一起拖崩
+                self._surfaces.pop(client_id, None)
 
-        if self._summary is not None:
-            good = sum(1 for o in rows if o.is_actionable)
-            neg = sum(1 for o in rows if not o.is_actionable)
-            hidden = len(self._rows) - len(rows)
-            parts = [f"{len(rows)} 个机会（{good} 个能做"]
-            if neg:
-                parts.append(f"，{neg} 个覆盖不了成本")
-            parts.append("）")
-            if hidden:
-                parts.append(f"，{hidden} 个吃不下这么多钱"
-                             + ("（打开「包含小币」可以看）"
-                                if not self.filters.include_small_caps else ""))
-            # 成本口径必须写在明面上，不能只藏在悬停里：整榜按挂牌价估算时，
-            # 用户至少要知道自己看的是估算值，才谈得上决定要不要去连账户
-            parts.append(self._fee_note(rows))
-            self._summary.text = "".join(parts)
-
-        with self._container:
+    def _render_into(self, surface: dict, rows: list[ScoredOpportunity],
+                     summary: str) -> None:
+        surface["summary"].text = summary
+        container = surface["container"]
+        container.clear()
+        with container:
             if not rows:
                 ui.label(self._empty_hint()) \
                     .classes("text-sm p-4").style(f"color:{theme.NEUTRAL}")
@@ -207,6 +258,30 @@ class OpportunityBoard:
             self._header()
             for o in rows:
                 self._row(o)
+
+    def _summary_text(self, rows: list[ScoredOpportunity]) -> str:
+        good = sum(1 for o in rows if o.is_actionable)
+        neg = sum(1 for o in rows if not o.is_actionable)
+        hidden = len(self._rows) - len(rows)
+        parts = [f"{len(rows)} 个机会（{good} 个能做"]
+        if neg:
+            parts.append(f"，{neg} 个覆盖不了成本")
+        parts.append("）")
+        if hidden:
+            parts.append(f"，{hidden} 个吃不下这么多钱"
+                         + ("（打开「包含小币」可以看）"
+                            if not self.filters.include_small_caps else ""))
+        # 成本口径必须写在明面上，不能只藏在悬停里：整榜按挂牌价估算时，
+        # 用户至少要知道自己看的是估算值，才谈得上决定要不要去连账户
+        parts.append(self._fee_note(rows))
+        # 挂单口径同理：整榜数字是"假设必成交"的上限时，这四个字
+        # 必须钉在摘要里，跟哪一行展开没展开无关
+        if self.filters.fill_mode == "maker_one":
+            parts.append("　·　单边挂单口径：净年化是假设挂单必成交的上限")
+        elif self.filters.fill_mode == "maker_both":
+            parts.append("　·　双边挂单口径：净年化是假设两腿都成交的上限，"
+                         "裸奔窗口也最长")
+        return "".join(parts)
 
     @staticmethod
     def _fee_note(rows: Sequence[ScoredOpportunity]) -> str:

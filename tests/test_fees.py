@@ -574,3 +574,55 @@ def test_the_tier_flips_the_verdict_on_a_marginal_opportunity():
 
     # 口径标记也跟着走，界面据此决定要不要打提示星号
     assert cheap_off.fee_basis == "default" and cheap_on.fee_basis == "real"
+
+
+# ---- 成交方式切换（界面链路，无头） ----------------------------------------
+
+def test_fill_mode_switch_triggers_a_full_rescore_not_a_render():
+    """成交方式改的是成本模型：只重渲染会让表头写着「挂单」而数字还是吃单的。
+
+    UI 那层的约定是：filters.fill_mode 一变就调 on_rescore（由 app 层接到
+    「从库重评整榜」上），而不是像其他过滤器那样只 render。
+    """
+    from carryfarm.ui.opportunities import OpportunityBoard
+
+    b = OpportunityBoard()
+    calls = []
+    b.on_rescore = lambda: calls.append(b.filters.fill_mode)
+
+    class E:
+        value = "maker_one"
+
+    b._set_fill_mode(E())
+    assert b.filters.fill_mode == "maker_one"
+    assert calls == ["maker_one"], "切换必须走 on_rescore，不能只 render"
+    # 重复选同一项不该白跑一次 105 秒都换不来的重评
+    b._set_fill_mode(E())
+    assert calls == ["maker_one"]
+
+
+def test_summary_line_pins_the_maker_assumption_on_the_whole_board():
+    """挂单口径下整榜都是「假设必成交」的上限，摘要行必须钉着这句话——
+    跟哪一行展开没展开无关。"""
+    from carryfarm.ui.opportunities import OpportunityBoard
+
+    b = OpportunityBoard()
+    assert "挂单" not in b._summary_text([])
+    b.filters.fill_mode = "maker_one"
+    assert "假设挂单必成交的上限" in b._summary_text([])
+    b.filters.fill_mode = "maker_both"
+    text = b._summary_text([])
+    assert "假设两腿都成交的上限" in text and "裸奔" in text
+
+
+def test_rescore_keeps_the_fill_mode_of_each_row():
+    """历史补完后的重评不能把挂单口径悄悄退回吃单——rescore 复用行上的口径。"""
+    feed, row_taker = board(None)
+    rows_maker = asyncio.run(feed.build_opportunities(
+        notional=50_000, horizon_h=HORIZON_H, fill_mode="maker_one"))
+    row = rows_maker[0]
+    assert row.fill_mode == "maker_one"
+    assert row.cost_rt < row_taker.cost_rt
+    again = feed.rescore([row], horizon_h=HORIZON_H)[0]
+    assert again.fill_mode == "maker_one"
+    assert again.cost_rt == pytest.approx(row.cost_rt, abs=1e-12)

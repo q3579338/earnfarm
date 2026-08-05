@@ -109,6 +109,14 @@ VENUE_LIMITS: Mapping[Venue, VenueHistoryLimit] = {
     Venue.BITGET: VenueHistoryLimit(
         90, 270, 1000,
         "270条硬顶（8h≈90天／4h≈45天／1h≈11天）；没有时间过滤参数，只能按 pageNo 翻"),
+    Venue.HYPERLIQUID: VenueHistoryLimit(
+        0, 0, 500,
+        "fundingHistory 单页500条、向新翻、startTime 闭区间；1h 结算 ⇒ 500条≈20.8天/页，"
+        "30 天要翻两页。文档没写保留上限（UNVERIFIED），先按可回溯处理"),
+    Venue.KUCOIN: VenueHistoryLimit(
+        0, 0, 1000,
+        "公开 /contract/funding-rates 按时间窗翻、返回**降序**（适配器已反转成升序）；"
+        "文档没写公开端点的保留上限（UNVERIFIED；私有版明确只留 6 个月）"),
 }
 
 _FALLBACK_LIMIT = VenueHistoryLimit(90, 0, 1000, "未知交易所，按 90 天保守处理")

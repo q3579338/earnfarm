@@ -20,7 +20,14 @@ from typing import Protocol, Sequence
 from .exchanges.base import Credential, ExchangeAdapter
 from .history import HistoryBackfiller
 from .models import FeeSchedule, Venue
-from .scoring import HistoryStats, LegQuote, ScoredOpportunity, rank, score_pair
+from .scoring import (
+    FILL_TAKER,
+    HistoryStats,
+    LegQuote,
+    ScoredOpportunity,
+    rank,
+    score_pair,
+)
 
 
 class FeeSource(Protocol):
@@ -48,6 +55,11 @@ DEFAULT_TAKER = {
     Venue.GATE: 0.0005,
     Venue.BYBIT: 0.00055,
     Venue.BITGET: 0.0006,
+    # feeSchedule.cross 基础档（cross=taker，别读成全仓）。HL 挂牌价比 CEX 低，
+    # 不加这条会兜到 .get 的 6bp 默认值，把这家的净年化系统性压低 1.5bp/腿
+    Venue.HYPERLIQUID: 0.00045,
+    # contracts/active 的 takerFeeRate（XBTUSDTM 实测 6.0E-4）
+    Venue.KUCOIN: 0.0006,
 }
 
 # 深度统计带宽。各家盘口接口返回的档位数不同，统一按这个带宽估可见深度。
@@ -134,6 +146,11 @@ class RawFunding:
     floor: float | None = None
 
 
+# 币名别名。KuCoin 沿用老派的 XBT 指代 BTC；放在归一化的最后一步做映射，
+# 别的家不用 XBT，全局替换是安全的
+_BASE_ALIASES = {"XBT": "BTC"}
+
+
 def normalize_base(symbol: str, venue: Venue) -> str:
     """把各家五花八门的符号归一成基础币名，好做跨所配对。
 
@@ -141,12 +158,28 @@ def normalize_base(symbol: str, venue: Venue) -> str:
     HTX 的 1000PEPE，指的是同一个币但面值差 1000 倍。
     这里只负责认出它们是同一个 base；面值换算由 Instrument.contract_size 承担，
     两边都做对了才不会出现 1000 倍仓位错配。
+
+    归一错的代价是**整家静默消失**：每个符号自成 bucket、配不上任何对，
+    适配器连得上、费率拉得到、界面照常显示"已连"，就是一行机会都不出。
+    KuCoin 的 XBTUSDTM 曾经就是这样——结尾多一个 M，后缀表全部落空。
     """
-    s = symbol.upper()
+    raw = symbol
+    # Hyperliquid 的千倍前缀是**小写 k**（kPEPE/kBONK），必须在 upper() 之前剥：
+    # 大写之后 kPEPE 和真实以 K 开头的币再也分不开，而 KAVA→AVA 不是配不上对，
+    # 是**配错对**——AVA（Travala）是别家真实存在的另一个币，两条腿会是
+    # 完全不同的资产，等于双向裸奔。判据只有原始大小写：小写 k + 全大写基名。
+    if (venue is Venue.HYPERLIQUID and len(raw) > 1
+            and raw[0] == "k" and raw[1:].isupper()):
+        raw = raw[1:]
+    s = raw.upper()
+    # KuCoin 合约一律带尾缀 M（XBTUSDTM / XBTUSDM）。这个 M 只能按 venue 剥，
+    # 塞进下面六家共用的后缀表等于给别家开新的误剥口子
+    if venue is Venue.KUCOIN and len(s) > 1 and s.endswith("M"):
+        s = s[:-1]
     # 必须循环剥：OKX 的 BTC-USDT-SWAP 要连剥两次（-SWAP 再 -USDT），
     # 只剥一次会得到 "BTC-USDT"，跟别家的 "BTC" 配不上对——
     # 结果就是 OKX 的币全部无法参与跨所配对。
-    suffixes = ("-SWAP", "_UMCBL", "_UMCBL", "-PERP", "_PERP",
+    suffixes = ("-SWAP", "_UMCBL", "-PERP", "_PERP",
                 "_USDT", "-USDT", "USDT", "_USD", "-USD", "USD")
     changed = True
     while changed:
@@ -159,8 +192,9 @@ def normalize_base(symbol: str, venue: Venue) -> str:
     s = s.strip("-_")
     for prefix in ("1000000", "100000", "10000", "1000", "1M", "1K"):
         if s.startswith(prefix) and len(s) > len(prefix):
-            return s[len(prefix):]
-    return s
+            s = s[len(prefix):]
+            break
+    return _BASE_ALIASES.get(s, s)
 
 
 class PublicFeed:
@@ -337,8 +371,8 @@ class PublicFeed:
                 carry or None)
 
     def rescore(self, rows: Sequence[ScoredOpportunity], *,
-                horizon_h: float, now_ts: float | None = None
-                ) -> list[ScoredOpportunity]:
+                horizon_h: float, now_ts: float | None = None,
+                fill_mode: str | None = None) -> list[ScoredOpportunity]:
         """拿库里**现在**的历史重新给已有榜单打分，不重拉任何行情。
 
         这是"先出榜、历史后台补、补完再刷新评分"的最后一步。复用原来的
@@ -359,7 +393,10 @@ class PublicFeed:
             out.append(score_pair(o.base, o.long, o.short, hist_l, hist_s,
                                   notional=o.notional, horizon_h=horizon_h,
                                   now_ts=now, hourly_carry=carry,
-                                  fee_basis=o.fee_basis))
+                                  fee_basis=o.fee_basis,
+                                  # None = 保持这一行原来的口径。丢掉它会让
+                                  # 历史补完后的那次重评悄悄退回双边吃单
+                                  fill_mode=fill_mode or o.fill_mode))
         return rank(out)
 
     # ---- 配对与评分 -----------------------------------------------------
@@ -390,7 +427,8 @@ class PublicFeed:
                                   horizon_h: float = 72,
                                   top_n: int = 40,
                                   fee_overrides: dict[Venue, float] | None = None,
-                                  fee_source: FeeSource | None = None
+                                  fee_source: FeeSource | None = None,
+                                  fill_mode: str = FILL_TAKER
                                   ) -> list[ScoredOpportunity]:
         """拉真实数据 → 跨所配对 → 评分 → 排序。
 
@@ -521,7 +559,8 @@ class PublicFeed:
             scored.append(score_pair(base, long_leg, short_leg, hist_l, hist_s,
                                      notional=feasible, horizon_h=horizon_h,
                                      now_ts=now, hourly_carry=carry,
-                                     fee_basis=_basis_of(real_legs)))
+                                     fee_basis=_basis_of(real_legs),
+                                     fill_mode=fill_mode))
         return rank(scored)
 
 

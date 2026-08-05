@@ -300,3 +300,70 @@ def test_ui_reports_venue_health_from_venues_with_data():
     assert "feed._adapters" not in src
     # 挂掉的那几家要写在状态栏上，不能只在日志里
     assert "venues_failed" in src
+
+
+# ---- normalize_base：新交易所的符号归一 ------------------------------------
+# 归一错的代价是整家静默消失（每个符号自成 bucket、配不上任何对，
+# 而界面照常显示"已连"）。这个函数此前零测试覆盖——KuCoin 接入时
+# XBTUSDTM 一个字符的差异就让整家白连，就是在这里发现的。
+
+def test_normalize_base_hyperliquid_k_prefix():
+    """小写 k 千倍前缀要剥，且必须在 upper() 之前判。"""
+    from carryfarm.models import Venue
+    from carryfarm.public_feed import normalize_base
+
+    assert normalize_base("kPEPE", Venue.HYPERLIQUID) == "PEPE"
+    assert normalize_base("kBONK", Venue.HYPERLIQUID) == "BONK"
+    assert normalize_base("kSHIB", Venue.HYPERLIQUID) == "SHIB"
+    # 裸币名原样通过
+    assert normalize_base("BTC", Venue.HYPERLIQUID) == "BTC"
+    assert normalize_base("HYPE", Venue.HYPERLIQUID) == "HYPE"
+
+
+def test_normalize_base_never_strips_real_k_coins():
+    """KAVA→AVA 不是配不上对，是**配错对**：AVA 是别家真实存在的另一个币，
+    凑成的"对冲"两条腿是不同资产，等于双向裸奔。"""
+    from carryfarm.models import Venue
+    from carryfarm.public_feed import normalize_base
+
+    for coin in ("KAVA", "KAS", "KSM", "KAITO", "KMNO"):
+        assert normalize_base(coin, Venue.HYPERLIQUID) == coin
+        # 别家的 K 开头币也一样不许动
+        assert normalize_base(coin + "USDT", Venue.BINANCE) == coin
+
+
+def test_normalize_base_kucoin_m_suffix():
+    """KuCoin 合约尾缀 M + XBT 别名。差一个字符 = 整家配对数恒等于 0。"""
+    from carryfarm.models import Venue
+    from carryfarm.public_feed import normalize_base
+
+    assert normalize_base("XBTUSDTM", Venue.KUCOIN) == "BTC"
+    assert normalize_base("XBTUSDM", Venue.KUCOIN) == "BTC"      # 反向合约
+    assert normalize_base("ETHUSDTM", Venue.KUCOIN) == "ETH"
+    assert normalize_base("1000PEPEUSDTM", Venue.KUCOIN) == "PEPE"
+    # 结尾本来就是 M 的正常币不受影响（剥掉合约 M 之后剩 GMT/XEM）
+    assert normalize_base("GMTUSDTM", Venue.KUCOIN) == "GMT"
+    assert normalize_base("XEMUSDTM", Venue.KUCOIN) == "XEM"
+
+
+def test_normalize_base_m_suffix_is_venue_scoped():
+    """M 只对 KuCoin 剥。塞进共享后缀表会给另外六家开误剥口子。"""
+    from carryfarm.models import Venue
+    from carryfarm.public_feed import normalize_base
+
+    # 假想某家有个以 M 结尾的币（如 PYTHM 之类），别家不许被剥
+    assert normalize_base("OMUSDT", Venue.BINANCE) == "OM"
+    assert normalize_base("ZROM", Venue.BINANCE) == "ZROM"
+
+
+def test_normalize_base_existing_venues_unchanged():
+    """六家的既有行为一个都不能变——这是回归钉子。"""
+    from carryfarm.models import Venue
+    from carryfarm.public_feed import normalize_base
+
+    assert normalize_base("BTCUSDT", Venue.BINANCE) == "BTC"
+    assert normalize_base("BTC-USDT-SWAP", Venue.OKX) == "BTC"
+    assert normalize_base("BTC-USDT", Venue.HTX) == "BTC"
+    assert normalize_base("BTC_USDT", Venue.GATE) == "BTC"
+    assert normalize_base("1000PEPEUSDT", Venue.BINANCE) == "PEPE"
+    assert normalize_base("SHIB_USDT", Venue.GATE) == "SHIB"

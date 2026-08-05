@@ -228,6 +228,7 @@ async def refresh_opportunities(state: AppState, status: ui.label,
             rows = await feed.build_opportunities(
                 notional=state.board.filters.notional,
                 horizon_h=state.board.filters.horizon_h,
+                fill_mode=state.board.filters.fill_mode,
                 # 连了账户就按**你的**费率档位算成本，没连就退回 VIP0 挂牌价。
                 # Session 满足 FeeSource 协议，档位在 connect_all 时已经缓存好了，
                 # 这里一个网络请求都不会多发。
@@ -338,7 +339,8 @@ async def backfill_history(state: AppState, rows, history_status: ui.label) -> N
         # 建六家适配器纯属浪费
         scorer = PublicFeed(backfiller=bf, history_days=state.history_days)
         state.board.set_rows(scorer.rescore(
-            state.board.rows, horizon_h=state.board.filters.horizon_h))
+            state.board.rows, horizon_h=state.board.filters.horizon_h,
+            fill_mode=state.board.filters.fill_mode))
 
         ok = sum(1 for r in results if r.ok)
         hits, total = scorer.history_hits, scorer.history_hits + scorer.history_misses
@@ -469,6 +471,21 @@ def build(config: Config, offline: bool = False,
                     on_click=lambda: refresh_opportunities(
                         state, feed_status, feed_spinner, history_status),
                 ).props("dense outline")
+
+            def rescore_in_place() -> None:
+                """成交方式切换：整榜重评，**不重拉行情**。
+
+                行情（LegQuote）没变，变的只是成本口径——重拉一次要 105 秒，
+                还白烧六家的限频配额；从库里重评是毫秒级的。"""
+                if not state.board.rows:
+                    return
+                scorer = PublicFeed(backfiller=state.ensure_backfiller(),
+                                    history_days=state.history_days)
+                state.board.set_rows(scorer.rescore(
+                    state.board.rows, horizon_h=state.board.filters.horizon_h,
+                    fill_mode=state.board.filters.fill_mode))
+
+            state.board.on_rescore = rescore_in_place
             state.board.build()
 
             if offline:

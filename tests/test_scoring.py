@@ -342,3 +342,93 @@ def test_prior_rows_are_never_actionable():
         op = _prior_pair(depth)
         assert not op.is_actionable, (
             f"depth={depth} 时零历史的行变成了可做：{op.verdict}")
+
+
+# ---- 成交方式（挂单口径） ------------------------------------------------
+
+def _fill_pair(fill_mode, taker_l=0.0005, taker_s=0.0005):
+    # maker 用 make_leg 写死的 0.0002。省多少 = taker+滑点−maker，
+    # 测试只要能控制 taker 就足以区分两条腿
+    short = make_leg(symbol="F-A", funding=0.003, taker=taker_s,
+                     depth=2_000_000.0)
+    long = make_leg(symbol="F-B", market="okx:perp", funding=-0.003,
+                    taker=taker_l, depth=2_000_000.0)
+    h = HistoryStats(rates=tuple([0.003] * 90), interval_h=8.0)
+    z = HistoryStats(rates=tuple([-0.003] * 90), interval_h=8.0)
+    return score_pair("F", long, short, z, h, notional=50_000,
+                      horizon_h=72, now_ts=NOW,
+                      hourly_carry=[0.00075] * 400, fill_mode=fill_mode)
+
+
+def test_fill_modes_are_strictly_ordered_by_cost():
+    """挂单只可能更便宜：taker >= maker_one >= maker_both，且省的钱可加。
+
+    这是口径的基本一致性——如果挂单算出来反而更贵，说明有一条腿把
+    maker 费算成了 taker，或者滑点被重复计了。
+    """
+    t = _fill_pair("taker")
+    m1 = _fill_pair("maker_one")
+    m2 = _fill_pair("maker_both")
+    assert t.cost_rt > m1.cost_rt > m2.cost_rt
+    assert t.net_apr < m1.net_apr < m2.net_apr
+    assert t.maker_saving == 0.0 and t.passive_side == "" and t.naked_notional == 0.0
+    assert m1.maker_saving > 0 and m1.passive_side in ("long", "short")
+    assert m2.maker_saving > m1.maker_saving and m2.passive_side == "both"
+
+
+def test_maker_one_picks_the_leg_that_saves_more():
+    """单边挂单必须挂在省得最多的那条腿上，挂错边等于白挂。"""
+    # 多腿 taker 0.10%、空腿 0.02%：省钱的明显是多腿
+    op = _fill_pair("maker_one", taker_l=0.0010, taker_s=0.0002)
+    assert op.passive_side == "long"
+    op2 = _fill_pair("maker_one", taker_l=0.0002, taker_s=0.0010)
+    assert op2.passive_side == "short"
+
+
+def test_passive_close_is_never_assumed():
+    """挂单只作用于开仓，平仓一律按吃单算。
+
+    平仓的时机通常不由你决定（费率翻转、爆仓距离、一腿被强平），
+    真要平的时候没有挂着等成交的余裕——把平仓也算成挂单，
+    CLOSE_URGENCY 这个系数就被抵消了。
+    验证方式：双边挂单省下的钱不可能超过开仓侧的全部 taker 成本。
+    """
+    t = _fill_pair("taker")
+    m2 = _fill_pair("maker_both")
+    open_taker_cost = (t.long.taker_fee + slippage_rate(t.long, "buy", t.notional)
+                       + t.short.taker_fee + slippage_rate(t.short, "sell", t.notional))
+    assert m2.maker_saving <= open_taker_cost + 1e-12
+
+
+def test_maker_mode_always_carries_the_naked_bill():
+    """挂单口径的每一行都必须附裸奔账单——好机会也不例外。
+
+    这条是"乐观模型必须自带警示"的钉子：省下的钱和裸露的亏损同名义，
+    价格反向走 maker_saving 省的就全赔回去，这个恒等式必须写在理由里。
+    """
+    for mode in ("maker_one", "maker_both"):
+        op = _fill_pair(mode)
+        joined = " ".join(op.reasons)
+        assert "挂单口径" in joined, f"{mode} 的理由里没有挂单账单：{op.reasons}"
+        assert "假设必成交" in joined
+        assert "单腿裸露" in joined
+        assert op.naked_breakeven_move == op.maker_saving
+        # 账单必须是最后一条：它是对上面所有数字的脚注
+        assert "挂单口径" in op.reasons[-1]
+    # 吃单口径不许出现这段话——没有假设就没有账单
+    t = _fill_pair("taker")
+    assert "挂单口径" not in " ".join(t.reasons)
+
+
+def test_fill_mode_survives_rescore_roundtrip():
+    """rescore 复用 fill_mode：历史补完后的重评不能悄悄退回吃单口径。"""
+    m1 = _fill_pair("maker_one")
+    # 模拟 rescore 的调用方式：从已评分的行里取 fill_mode 再评一遍
+    again = score_pair(m1.base, m1.long, m1.short,
+                       HistoryStats(rates=tuple([-0.003] * 90), interval_h=8.0),
+                       HistoryStats(rates=tuple([0.003] * 90), interval_h=8.0),
+                       notional=m1.notional, horizon_h=72, now_ts=NOW,
+                       hourly_carry=[0.00075] * 400,
+                       fee_basis=m1.fee_basis, fill_mode=m1.fill_mode)
+    assert again.fill_mode == "maker_one"
+    assert abs(again.cost_rt - m1.cost_rt) < 1e-12

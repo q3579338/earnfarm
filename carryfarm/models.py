@@ -21,6 +21,13 @@ class Venue(str, enum.Enum):
     GATE = "gate"
     BYBIT = "bybit"
     BITGET = "bitget"
+    # 加新成员前先看 docs/research/exchange-<venue>.md 是否已就位：
+    # 枚举是全仓 6 处自动入列点的开关（open_public_adapters、PublicFeed、
+    # 账户页下拉、watch 的 StaleMonitor……），一加立刻全线生效，
+    # 而 ui/accounts.py 的 VENUE_LABELS 缺条目会让账户页直接打不开——
+    # 枚举和它的各处映射必须同一个提交落地。
+    HYPERLIQUID = "hyperliquid"
+    KUCOIN = "kucoin"
 
 
 class MarketKind(str, enum.Enum):

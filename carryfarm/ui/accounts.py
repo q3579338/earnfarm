@@ -14,7 +14,12 @@ import time
 from nicegui import ui
 
 from ..models import Venue
-from ..session import CREDENTIAL_FIELDS, FIELD_LABELS, Session
+from ..session import (
+    CREDENTIAL_FIELDS,
+    FIELD_LABELS,
+    VENUE_FIELD_LABELS,
+    Session,
+)
 from ..storage import StorageError
 from ..vault import BadPassword
 from . import theme
@@ -26,6 +31,8 @@ VENUE_LABELS = {
     Venue.GATE: "Gate.io",
     Venue.BYBIT: "Bybit",
     Venue.BITGET: "Bitget",
+    Venue.HYPERLIQUID: "Hyperliquid（链上）",
+    Venue.KUCOIN: "KuCoin",
 }
 
 # 各家配 API key 时的必做项。这些是踩出来的，写在界面上比写在文档里有用得多。
@@ -37,6 +44,13 @@ VENUE_SETUP_HINTS = {
     Venue.GATE: "必须先升级成统一账户，否则永续接口不通。",
     Venue.BYBIT: "选「读写权限」并勾上 UTA 的全部四项。",
     Venue.BITGET: "USDC 合约和 U 本位合约要分别设持仓模式。",
+    # 链上 DEX，没有"关提现""绑 IP"这类 CEX 概念，别照六家的口气写
+    Venue.HYPERLIQUID: "在 app.hyperliquid.xyz 的 API 页生成 API Wallet 并授权。"
+                       "填的是主钱包**地址**和 API Wallet 的**私钥**——"
+                       "API Wallet 只能签单、不能动资产，但私钥仍要当密码保管。"
+                       "注意 agent 有有效期，过期后要重新授权。",
+    Venue.KUCOIN: "创建 API 时勾「通用」+「合约交易」，Passphrase 是你自己设的那句话。"
+                  "合约走 api-futures 域名，key 是通用的。",
 }
 
 
@@ -200,7 +214,10 @@ class AccountsPanel:
             ui.label("添加交易所账户").classes("text-base font-bold")
 
             venue_select = ui.select(
-                {v: VENUE_LABELS[v] for v in Venue}, value=Venue.BINANCE, label="交易所"
+                # .get 兜底：VENUE_LABELS 漏一条不该让整个账户页打不开——
+                # 枚举是自动入列的，这里曾是"加枚举忘加映射"唯一的崩溃点
+                {v: VENUE_LABELS.get(v, v.value) for v in Venue},
+                value=Venue.BINANCE, label="交易所"
             ).props("dense outlined").classes("w-full")
 
             alias = ui.input("备注名", placeholder="比如 主号 / 小号2") \
@@ -218,8 +235,10 @@ class AccountsPanel:
                 inputs.clear()
                 with fields_box:
                     for f in CREDENTIAL_FIELDS[venue]:
+                        label = VENUE_FIELD_LABELS.get(venue, {}).get(
+                            f, FIELD_LABELS[f])
                         # 一律 password 类型：防肩窥，也防从 DOM 里读出来
-                        inputs[f] = ui.input(FIELD_LABELS[f], password=True,
+                        inputs[f] = ui.input(label, password=True,
                                              password_toggle_button=True) \
                             .props("dense outlined").classes("w-full")
 
