@@ -220,7 +220,10 @@ async def refresh_opportunities(state: AppState, status: ui.label,
     state.refreshing = True
     state.refresh_started_at = time.time()
     spinner.set_visibility(True)
-    _set_feed_status(state, status, "正在从六家交易所拉取实时资金费率…")
+    # 家数从枚举数出来，别写死——上一次写死"六家"，加了两家之后这行文案
+    # 骗了所有人一轮
+    _set_feed_status(state, status,
+                     f"正在从{len(tuple(Venue))}家交易所拉取实时资金费率…")
     try:
         state.set_history_days(_history_days_for(state.board.filters.horizon_h))
         async with PublicFeed(backfiller=state.ensure_backfiller(),
