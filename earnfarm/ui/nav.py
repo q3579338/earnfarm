@@ -20,6 +20,7 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     ("premium", "双市场溢价监控", "/premium"),
     ("analysis", "操作复盘", "/analysis"),
     ("market", "单币分析", "/market"),
+    ("download", "下载本地版", "/download"),
 )
 
 

@@ -784,6 +784,13 @@ def main(argv: list[str] | None = None) -> None:
         # 单币分析：公开行情免凭据；与复盘页共用引擎、后台任务和历史报告
         build_analysis_page(state.session, config, page_mode="market")
 
+    @ui.page("/download")
+    def download() -> None:
+        # 网页版有天花板（跑不了本机 AI CLI、不该碰服务器的 vault），
+        # 想要完整功能的人在这里拿到本地版
+        from .download_page import build_download_page
+        build_download_page()
+
     # 访问闸：设了 EARNFARM_WEB_PASSWORD 就整站先过 /login。
     # 挂公网（哪怕躲在反代后面）必须开——运行时状态是所有客户端共享的，
     # 没有这道闸，你解锁的 vault 对任何访客都是解锁的
