@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
 import re
 import time
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
@@ -47,8 +48,11 @@ from .base import (
     RateLimited,
 )
 
-FAPI_BASE = "https://fapi.binance.com"
-PAPI_BASE = "https://papi.binance.com"
+# 接口地址可用环境变量顶掉：币安按 IP 做地域封锁（受限地区直接 451），
+# 部署在这类地区的机器必须走自建反代/Worker 转发。留这个口子比让整个
+# 工具在那台机器上彻底不可用强。
+FAPI_BASE = os.environ.get("EARNFARM_FAPI_BASE", "https://fapi.binance.com").rstrip("/")
+PAPI_BASE = os.environ.get("EARNFARM_PAPI_BASE", "https://papi.binance.com").rstrip("/")
 
 # bookTicker 在 /public 路由，markPrice 在 /market 路由 —— 2026-03-06 分流改造后
 # 两者不在同一条连接上，旧的 /ws/ 直连地址已于 2026-04-23 下线

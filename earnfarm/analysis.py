@@ -561,7 +561,7 @@ def run_engine(engine: str, instruction: str, payload: str, cfg: AnalysisConfig,
 
 # 只用 fapi 公开端点，和溢价页同一来源。不 import 币安适配器：
 # 这里一个签名请求都没有，犯不着拖进整个适配器
-_FAPI = "https://fapi.binance.com"
+_FAPI = os.environ.get("EARNFARM_FAPI_BASE", "https://fapi.binance.com").rstrip("/")
 
 # 嵌入 prompt 的 K 线上限。1h 线 14 天 = 336 根，再多模型也读不动
 _KLINES_EMBED_MAX = 336

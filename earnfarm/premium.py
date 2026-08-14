@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 import asyncio
 import statistics
 import time
@@ -22,7 +23,9 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-FAPI_BASE = "https://fapi.binance.com"
+# 可用 EARNFARM_FAPI_BASE 顶掉：币安对受限地区的 IP 直接返回 451，
+# 部署在那类机器上必须走自建反代/Worker 转发
+FAPI_BASE = os.environ.get("EARNFARM_FAPI_BASE", "https://fapi.binance.com").rstrip("/")
 
 # 参考区间默认回看的 1h K 线根数。505 根 ≈ 三周：SKHYNIXUSDT 2026-07-20 才上线，
 # 默认拉更长只会拿到零填充；页面上可改，上限压在 fapi 单请求 1500 根以内
