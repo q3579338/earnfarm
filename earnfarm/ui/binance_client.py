@@ -140,6 +140,51 @@ window.efBin = {
 """
 
 
+_BRIDGE_JS = """
+window.efBridge = {
+  port: 8790, token: '',
+  async ping(port, token) {
+    this.port = port || 8790; this.token = token || '';
+    const r = await fetch('http://127.0.0.1:' + this.port + '/ping',
+                          { headers: { 'X-Earnfarm-Token': this.token } });
+    if (!r.ok) throw new Error('桥接返回 ' + r.status + '（令牌不对？）');
+    return r.json();
+  },
+  async run(engine, instruction, payload) {
+    const r = await fetch('http://127.0.0.1:' + this.port + '/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json',
+                 'X-Earnfarm-Token': this.token },
+      body: JSON.stringify({ engine: engine, instruction: instruction,
+                             payload: payload }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || ('桥接返回 ' + r.status));
+    return j.report;
+  },
+};
+"""
+
+
+def install_bridge() -> None:
+    """注入本地桥接客户端。页面借它调用**访客本机**的 AI CLI——
+    数据和报告都不经过服务器。"""
+    ui.add_head_html(f"<script>{_BRIDGE_JS}</script>")
+
+
+async def bridge_ping(port: int, token: str, timeout: float = 8.0) -> list[str]:
+    expr = f"window.efBridge.ping({int(port)}, {json.dumps(token)})"
+    res = await _call(expr, timeout)
+    return list((res or {}).get("engines", []))
+
+
+async def bridge_run(engine: str, instruction: str, payload: str,
+                     timeout: float = 900.0) -> str:
+    expr = (f"window.efBridge.run({json.dumps(engine)}, "
+            f"{json.dumps(instruction)}, {json.dumps(payload)})")
+    return str(await _call(expr, timeout) or "")
+
+
 class BinanceBrowserError(Exception):
     """浏览器端请求失败。message 直接给用户看（多半是密钥错或网络不通）。"""
 

@@ -3,8 +3,9 @@
 必须用顶层脚本而不是 `python -m earnfarm.ui.app`：NiceGUI 的 ui.run() 会用
 runpy.run_path 重跑入口文件，那条路径不带包上下文，包内的相对导入会全部炸掉。
 
-两种形态：
+三种形态：
     python run.py                    界面模式（浏览器）
+    python run.py --bridge           本地 AI 桥接（给公开版网页用本机 CLI）
     python run.py --watch            守护模式（无界面，7×24 跑，有事才推送）
     python run.py --watch --status   问一句"它还活着吗"
     python run.py --watch --once     只跑一轮就退出（排错 / cron）
@@ -17,6 +18,10 @@ import sys
 
 def main() -> None:
     argv = sys.argv[1:]
+    if "--bridge" in argv:
+        # 本地 AI 桥接：让公开版网页用上你自己电脑上的 claude/grok/codex
+        from earnfarm.bridge import main as bridge_main
+        raise SystemExit(bridge_main([a for a in argv if a != "--bridge"]))
     if "--watch" in argv:
         from earnfarm.watch import main as watch_main
         raise SystemExit(watch_main([a for a in argv if a != "--watch"]))

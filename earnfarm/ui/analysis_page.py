@@ -271,9 +271,12 @@ def build_analysis_page(session: Session, config: Config,
     ui.dark_mode(False)
     # 线上模式（多人共用）：凭据一律存访客自己的浏览器，服务器不托管任何人的密钥
     online = hosted_mode()
+    # 已连上的本地桥接引擎（访客自己电脑上的 CLI）
+    _bridge_ready: set[str] = set()
     if online:
         browser_creds.install()
         binance_client.install(os.environ.get("EARNFARM_FAPI_BASE", ""))
+        binance_client.install_bridge()
 
     with ui.header().classes("items-center justify-between px-4 py-2") \
             .style("background:#ffffff; color:#18181b; "
@@ -504,6 +507,59 @@ def build_analysis_page(session: Session, config: Config,
             ui.label("公开版用你自己的大模型 API（DeepSeek / xAI / Anthropic 等），"
                      "key 加密存在你自己的浏览器里。") \
                 .classes("text-xs").style(f"color:{theme.NEUTRAL}")
+
+            # ---- 本地 CLI 桥接：用**你自己电脑上**的 claude/grok/codex ----
+            with ui.expansion("用我自己电脑上的 AI CLI（本地桥接）",
+                              icon="terminal").classes("w-full") as bridge_exp:
+                ui.label("网页不能直接运行你电脑上的程序（浏览器的安全边界），"
+                         "但可以通过一个本地小程序转一手：在你自己电脑上跑") \
+                    .classes("text-xs").style(f"color:{theme.NEUTRAL}")
+                ui.code("python run.py --bridge", language="bash").classes("w-full")
+                ui.label("它会打印一个桥接令牌，粘到下面点「连接」即可。"
+                         "连上后 AI 分析在你自己电脑上跑：不花 API 的钱，"
+                         "数据也不出你的机器。") \
+                    .classes("text-xs").style(f"color:{theme.NEUTRAL}")
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    bridge_port_in = ui.number("端口", value=8790, format="%d") \
+                        .props("dense outlined").classes("w-24")
+                    bridge_token_in = ui.input("桥接令牌") \
+                        .props("dense outlined").classes("w-64")
+                    bridge_btn = ui.button("连接").props("dense unelevated")
+                bridge_status = ui.label().classes("text-xs") \
+                    .style(f"color:{theme.NEUTRAL}")
+                bridge_engines_box = ui.row().classes("items-center gap-4 flex-wrap")
+
+            async def connect_bridge() -> None:
+                bridge_engines_box.clear()
+                for e in list(engine_checks):
+                    if e != "api":
+                        engine_checks[e].value = False
+                try:
+                    found = await binance_client.bridge_ping(
+                        int(bridge_port_in.value or 8790),
+                        (bridge_token_in.value or "").strip())
+                except Exception as exc:
+                    bridge_status.text = (f"连不上本地桥接：{exc}。"
+                                          "确认已在自己电脑上运行 python run.py --bridge")
+                    bridge_status.style(f"color:{theme.WARN}")
+                    _bridge_ready.clear()
+                    return
+                if not found:
+                    bridge_status.text = "桥接连上了，但你机器上没装任何 AI CLI"
+                    bridge_status.style(f"color:{theme.WARN}")
+                    _bridge_ready.clear()
+                    return
+                _bridge_ready.clear()
+                _bridge_ready.update(found)
+                bridge_status.text = f"✓ 已连接，本机可用引擎：{'、'.join(found)}"
+                bridge_status.style(f"color:{theme.SAFE}")
+                with bridge_engines_box:
+                    for e in found:
+                        engine_checks[e].set_visibility(True)
+                        engine_checks[e].value = True
+                        engine_checks[e].move(bridge_engines_box)
+
+            bridge_btn.on_click(connect_bridge)
         else:
             avail = {e: engine_available(e, config.analysis)
                      for e in ANALYSIS_ENGINES if e != "api"}
@@ -728,9 +784,30 @@ def build_analysis_page(session: Session, config: Config,
                     instruction = build_market_instruction(mb, focus_in.value or "")
                     count_txt = f"{mb.interval} K 线 × {len(mb.sections)} 个标的"
 
-                await _run_ai(job, cfg=cfg, engines=engines, instruction=instruction,
-                              payload=payload, workdir=workdir, api_opts=api_opts,
-                              count_txt=count_txt)
+                # 桥接引擎在**访客自己电脑**上跑，服务器只是把 payload 交给
+                # 浏览器再转给本机 CLI；API 引擎仍由服务器发请求
+                job.stage = f"{count_txt}，{len(engines)} 个引擎分析中…"
+                for e in engines:
+                    job.engines[e] = _EngineRun()
+                render_job()
+                for e in engines:
+                    r = job.engines[e]
+                    try:
+                        if e in _bridge_ready:
+                            r.report = await binance_client.bridge_run(
+                                e, instruction, payload)
+                        else:
+                            r.report = await run.io_bound(
+                                run_engine, e, instruction, payload, cfg,
+                                workdir=workdir, api_opts=api_opts)
+                        r.status = "done"
+                        (workdir / f"{time.strftime('%Y%m%d-%H%M%S')}-{e}.md") \
+                            .write_text(r.report, encoding="utf-8")
+                    except Exception as exc:
+                        r.error = str(exc)
+                        r.status = "failed"
+                    render_job()
+                job.stage = f"{time.strftime('%H:%M:%S')} 完成"
             except (AnalysisError, binance_client.BinanceBrowserError) as exc:
                 job.error = str(exc)
             except Exception as exc:
