@@ -276,11 +276,27 @@ def specs_for(venue: str) -> tuple[_Spec, ...]:
     return tuple(s for s in _SPECS if s.venue == venue)
 
 
+def venue_name(v: Any) -> str:
+    """任何形态的"一家交易所" → 小写名字。
+
+    **绝不用 isinstance(v, Venue) 判断**。Venue 是 `str, Enum`，`str(v)` 落到
+    `"Venue.BINANCE"` 而不是 `"binance"`——名字对不上 BROWSER_FETCHABLE，
+    整张表一家都匹配不上，而且**不报任何错**（那正是上线第一版的 bug：
+    机会榜稳定少掉 binance 和 bybit 两条腿，状态栏一个字的提示都没有）。
+
+    而 isinstance 本身就靠不住：NiceGUI 的 ui.run() 用 runpy.run_path 重跑入口
+    文件，earnfarm.models 会被加载成两份，两份里的 Venue 是**两个不同的类**，
+    枚举成员对另一份的 isinstance 一律 False。所以这里只看鸭子类型：
+    有 .value 就用 .value，没有就当它本来就是名字。
+    """
+    return str(getattr(v, "value", v)).strip().lower()
+
+
 def _venue_names(venues: Iterable[Any] | None) -> list[str]:
     """Venue 枚举 / 字符串都收，输出小写字符串。"""
     if venues is None:
         return sorted(BROWSER_FETCHABLE)
-    return [v.value if isinstance(v, Venue) else str(v) for v in venues]
+    return [venue_name(v) for v in venues]
 
 
 async def feed_board_all(venues: Iterable[Any] | None = None,
@@ -297,11 +313,14 @@ async def feed_board_all(venues: Iterable[Any] | None = None,
     """
     fed: dict[str, int] = {}
     errors: dict[str, str] = {}
+    names = _venue_names(venues)
+    matched = False
 
-    for venue in _venue_names(venues):
+    for venue in names:
         specs = specs_for(venue)
         if not specs:
             continue        # 服务端直连的家，压根不发浏览器请求
+        matched = True
         payload = [{"venue": s.venue, "key": s.cache_key, "url": s.url,
                     "body": s.body, "trim": s.trim} for s in specs]
         expr = f"window.efPub.board({json.dumps(payload, ensure_ascii=False)})"
@@ -324,6 +343,18 @@ async def feed_board_all(venues: Iterable[Any] | None = None,
             prev = errors.get(venue)
             note = f"{label}：{why}"
             errors[venue] = f"{prev}；{note}" if prev else note
+        if venue not in fed and venue not in errors:
+            # 既没喂上也没报错 = 浏览器回了个空壳（响应被截断、efPub 版本对不上）。
+            # **不许静默**：这一格空着，调用方会以为这家本来就不用浏览器取数
+            errors[venue] = "浏览器回了空响应（既没数据也没错误）"
+
+    if names and not matched:
+        # 一家都没匹配上 = 名字对不上表，而不是"这批家都走服务端"。
+        # 这正是上线第一版那个 bug 的形态：整个函数瞬间返回两个空 dict，
+        # 界面上一个字都不说，机会榜稳定少两条腿。宁可吵，也不能再哑一次。
+        errors["浏览器取数"] = (
+            f"没有一家匹配上取数表（收到的名字：{'、'.join(sorted(set(names)))}；"
+            f"表里的名字：{'、'.join(sorted(BROWSER_FETCHABLE))}）")
 
     return fed, errors
 

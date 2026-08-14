@@ -278,8 +278,11 @@ async def refresh_opportunities(state: AppState, status: ui.label,
     from .access import hosted_mode
     if hosted_mode():
         from . import public_feed_client
-        picked = [v.value for v in state.enabled_venues
-                  if v.value in public_feed_client.BROWSER_FETCHABLE]
+        # 名字必须走 venue_name()，**不能写 v.value**：models 被加载成两份时
+        # （NiceGUI 用 runpy 重跑入口文件）枚举成员的类不是同一个，
+        # 而 v.value 在别的形态（str 列表）下直接 AttributeError
+        picked = [public_feed_client.venue_name(v) for v in state.enabled_venues]
+        picked = [v for v in picked if v in public_feed_client.BROWSER_FETCHABLE]
         if picked:
             _set_feed_status(state, status,
                              f"正在用你的浏览器拉取 {'、'.join(picked)} 的行情…",

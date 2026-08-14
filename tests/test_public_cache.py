@@ -366,6 +366,100 @@ def test_hyperliquid_carry_rates_served_from_spec_fed_cache():
     assert rates[0].rate == Decimal("0.0000125")
 
 
+# ---- venue 名字归一（上线第一版就是死在这里）--------------------------------
+
+def test_venue_name_survives_a_second_copy_of_the_models_module():
+    """**上线第一版的 bug**：用 isinstance(v, Venue) 判断，models 被加载成两份时
+    （NiceGUI 的 ui.run 用 runpy.run_path 重跑入口文件）枚举成员对另一份的
+    isinstance 一律 False，于是落到 str(v) = "Venue.BINANCE"，
+    匹配不上取数表 → 一家都不拉 → 机会榜稳定少 binance/bybit 两条腿且零提示。
+    """
+    import importlib.util
+    import sys
+
+    from earnfarm import models as m1
+    from earnfarm.ui import public_feed_client as pf
+
+    spec = importlib.util.spec_from_file_location("models_dup_for_test", m1.__file__)
+    dup = importlib.util.module_from_spec(spec)
+    sys.modules["models_dup_for_test"] = dup
+    try:
+        spec.loader.exec_module(dup)
+        alien = dup.Venue.BINANCE
+        assert not isinstance(alien, m1.Venue), "前提：两份 Venue 确实不是同一个类"
+        assert pf.venue_name(alien) == "binance"
+        assert pf.specs_for(pf.venue_name(alien)), "换个类加载也必须匹配得上"
+    finally:
+        sys.modules.pop("models_dup_for_test", None)
+
+
+def test_venue_name_accepts_plain_strings_and_normalises_case():
+    from earnfarm.ui import public_feed_client as pf
+
+    assert pf.venue_name("BINANCE") == "binance"
+    assert pf.venue_name(" bybit ") == "bybit"
+    assert pf.venue_name(Venue_of("binance")) == "binance"
+
+
+def Venue_of(name):
+    from earnfarm.models import Venue
+
+    return Venue(name)
+
+
+def test_no_venue_matching_the_table_is_reported_not_swallowed():
+    """名字全对不上时必须**吵**。静默返回两个空 dict 正是 bug 藏了一整轮的原因：
+    界面上一个字都不说，用户只看到榜上莫名少两家。"""
+    from earnfarm.ui import public_feed_client as pf
+
+    fed, errors = asyncio.run(pf.feed_board_all(["Venue.BINANCE", "Venue.BYBIT"]))
+    assert fed == {}
+    assert errors, "一家都没匹配上却不报错 = 又一次静默失败"
+    assert "没有一家匹配上取数表" in next(iter(errors.values()))
+
+
+def test_empty_browser_response_is_reported_not_swallowed(monkeypatch):
+    """浏览器回了空壳（既没 ok 也没 errors）同样不许静默。"""
+    from nicegui import ui
+
+    from earnfarm.ui import public_feed_client as pf
+
+    async def blank(expr, timeout=None):
+        return {}
+
+    monkeypatch.setattr(ui, "run_javascript", blank)
+    fed, errors = asyncio.run(pf.feed_board_all(["binance"]))
+    assert fed == {}
+    assert "空响应" in errors["binance"]
+
+
+def test_feed_board_all_feeds_cache_for_browser_venues(monkeypatch):
+    """正常路径：四家各一次往返，缓存被真正喂上。"""
+    import json as _json
+
+    from nicegui import ui
+
+    from earnfarm.ui import public_feed_client as pf
+
+    rounds = []
+
+    async def fake_js(expr, timeout=None):
+        rounds.append(expr)
+        specs = _json.loads(expr[len("window.efPub.board("):-1])
+        return {"ok": {f"{s['venue']}:{s['key']}": {"ok": True} for s in specs},
+                "errors": {}}
+
+    monkeypatch.setattr(ui, "run_javascript", fake_js)
+    from earnfarm.models import Venue as V
+
+    fed, errors = asyncio.run(pf.feed_board_all(tuple(V)))
+    assert errors == {}
+    assert fed == {"binance": 3, "bybit": 2, "bitget": 2, "hyperliquid": 2}
+    assert len(rounds) == 4, "每家各一次往返，单条消息只装一家"
+    # 缓存真的被喂上了（键就是适配器会去查的那个）
+    assert public_cache_get("bybit", "GET /v5/market/tickers?category=linear")
+
+
 def test_spec_urls_are_absolute_and_carry_params():
     from earnfarm.ui import public_feed_client as pf
 
