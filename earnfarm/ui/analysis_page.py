@@ -492,17 +492,30 @@ def build_analysis_page(session: Session, config: Config,
         ui.label("分析引擎（可多选，并行各出一份报告）").classes("text-xs") \
             .style(f"color:{theme.NEUTRAL}")
         engine_checks: dict[str, ui.checkbox] = {}
-        avail = {e: engine_available(e, config.analysis)
-                 for e in ANALYSIS_ENGINES if e != "api"}
-        defaults = [e for e in config.analysis.default_engines
-                    if e == "api" or avail.get(e, (False, ""))[0]] \
-            or [e for e, (ok, _) in avail.items() if ok][:1]
-        with ui.row().classes("items-center gap-4 flex-wrap"):
+        if online:
+            # 多人模式只提供线上 API：本机 CLI 跑在**服务器**上，让访客调用
+            # 等于拿主人的 AI 订阅给全网用。每人带自己的 key，各付各的。
+            with ui.row().classes("items-center gap-4 flex-wrap"):
+                engine_checks["api"] = ui.checkbox(ENGINE_LABELS["api"], value=True)
             for e in ANALYSIS_ENGINES:
-                label = ENGINE_LABELS[e]
-                if e != "api" and not avail[e][0]:
-                    label += f"（{avail[e][1]}）"
-                engine_checks[e] = ui.checkbox(label, value=e in defaults)
+                if e != "api":
+                    engine_checks[e] = ui.checkbox(ENGINE_LABELS[e], value=False)
+                    engine_checks[e].set_visibility(False)
+            ui.label("公开版用你自己的大模型 API（DeepSeek / xAI / Anthropic 等），"
+                     "key 加密存在你自己的浏览器里。") \
+                .classes("text-xs").style(f"color:{theme.NEUTRAL}")
+        else:
+            avail = {e: engine_available(e, config.analysis)
+                     for e in ANALYSIS_ENGINES if e != "api"}
+            defaults = [e for e in config.analysis.default_engines
+                        if e == "api" or avail.get(e, (False, ""))[0]] \
+                or [e for e, (ok, _) in avail.items() if ok][:1]
+            with ui.row().classes("items-center gap-4 flex-wrap"):
+                for e in ANALYSIS_ENGINES:
+                    label = ENGINE_LABELS[e]
+                    if e != "api" and not avail[e][0]:
+                        label += f"（{avail[e][1]}）"
+                    engine_checks[e] = ui.checkbox(label, value=e in defaults)
 
         # ---- 线上 API 配置（勾中 api 才显示）----
         with ui.column().classes("gap-2 w-full pl-2") as api_box:
@@ -558,7 +571,7 @@ def build_analysis_page(session: Session, config: Config,
         provider_sel.on_value_change(lambda e: apply_preset())
 
         def sync_api_box() -> None:
-            api_box.set_visibility(bool(engine_checks["api"].value))
+            api_box.set_visibility(online or bool(engine_checks["api"].value))
 
         engine_checks["api"].on_value_change(lambda e: sync_api_box())
 
