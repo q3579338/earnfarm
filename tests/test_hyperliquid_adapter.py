@@ -44,8 +44,8 @@ from eth_account import Account
 from eth_account.messages import encode_typed_data
 from eth_utils import keccak
 
-from carryfarm.exchanges import hyperliquid as HL
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges import hyperliquid as HL
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -53,14 +53,14 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.exchanges.hyperliquid import (
+from earnfarm.exchanges.hyperliquid import (
     EXCHANGE_PATH,
     FUNDING_HISTORY_PAGE,
     INFO_PATH,
     HyperliquidAdapter,
     _wire,
 )
-from carryfarm.models import MarketKind
+from earnfarm.models import MarketKind
 
 # 一把纯测试用的私钥（0x + 64 hex，从未在链上用过）。
 API_SECRET = "0x" + "11" * 32

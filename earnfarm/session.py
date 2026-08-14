@@ -196,6 +196,30 @@ class Session:
         self.unlock(old)
         self.storage.rotate_password(self.vault, new)
 
+    def reset_vault(self) -> None:
+        """忘记主密码时的重置：清空已存凭据与旧密码，之后可重新 initialize。"""
+        self.storage.reset_vault()
+        self.lock()
+
+    # ---- AI API key（线上分析引擎用，加密同库存放）----------------------
+
+    def save_ai_key(self, provider: str, api_key: str) -> None:
+        if not self.is_unlocked:
+            raise VaultLocked("凭据库未解锁")
+        self.storage.save_secret(f"ai:{provider}", {"api_key": api_key.strip()},
+                                 self.vault)
+
+    def load_ai_key(self, provider: str) -> str | None:
+        """未解锁/未保存返回 None——调用方自己决定回退到环境变量还是报错。"""
+        if not self.is_unlocked:
+            return None
+        secret = self.storage.load_secret(f"ai:{provider}", self.vault)
+        return secret.get("api_key") if secret else None
+
+    def has_ai_key(self, provider: str) -> bool:
+        """有没有存过（不解密）。锁着时也能答，界面用它显示"已保存 ✓"。"""
+        return f"ai:{provider}" in self.storage.list_secret_names()
+
     # ---- 纸上 / 实盘 ----------------------------------------------------
 
     @property
@@ -256,6 +280,41 @@ class Session:
     def delete_account(self, account_id: str) -> None:
         self._connected.pop(account_id, None)
         self.storage.delete_account(account_id)
+
+    def open_account_credential(self, account_id: str) -> tuple[Venue, dict]:
+        """解出某个已存账户的凭据（给操作分析页构造一次性适配器用）。
+        跨类别查找：套利账户和分析专用凭据都能按 id 解。"""
+        if not self.is_unlocked:
+            raise VaultLocked("凭据库未解锁")
+        row = next((r for r in self.storage.list_accounts(kind=None)
+                    if r.id == account_id), None)
+        if row is None:
+            raise SessionError(f"账户不存在: {account_id}")
+        return row.venue, self.storage.open_credential(row, self.vault)
+
+    # ---- 分析专用凭据 ----------------------------------------------------
+    # 与套利账户同库同加密，但 kind 不同：connect_all 永远不会连它们，
+    # 账户页也不展示——「这边保存的 API 只用于分析，和套利不是一码事」。
+
+    def list_analysis_accounts(self) -> list[AccountInfo]:
+        return [
+            AccountInfo(id=r.id, venue=r.venue, alias=r.alias, disabled=r.disabled)
+            for r in self.storage.list_accounts(kind="analysis")
+        ]
+
+    def add_analysis_account(self, venue: Venue, alias: str, credential: dict,
+                             now_ms: int) -> str:
+        if not self.is_unlocked:
+            raise VaultLocked("凭据库未解锁")
+        clean = {k: str(v).strip() for k, v in credential.items()
+                 if k in CREDENTIAL_FIELDS[venue] and v}
+        return self.storage.add_account(venue, alias.strip(), clean, self.vault,
+                                        now_ms, kind="analysis")
+
+    def build_adapter(self, venue: Venue, credential: dict) -> ExchangeAdapter:
+        """公开的适配器构造入口。临时凭据只活在返回的适配器对象里，
+        不进 vault 不落盘——用完必须 close()。"""
+        return self._build_adapter(venue, credential)
 
     def _build_adapter(self, venue: Venue, credential: dict) -> ExchangeAdapter:
         cls = _adapter_class(venue)

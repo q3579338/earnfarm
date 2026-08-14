@@ -54,7 +54,7 @@ from .safety import (
 )
 from .scoring import ScoredOpportunity
 
-log = logging.getLogger("carryfarm.alerts")
+log = logging.getLogger("earnfarm.alerts")
 
 
 # ---- 事件与严重度 -------------------------------------------------------
@@ -192,20 +192,20 @@ class Alert:
         lines = [head]
         lines += [f"· {b}" for b in self.body]
         lines.append(f"→ 该做什么：{self.action}")
-        lines.append(f"（carryfarm {self.when}）")
+        lines.append(f"（earnfarm {self.when}）")
         return "\n".join(lines)
 
     def as_markdown(self) -> str:
         """PushPlus 的 markdown 模板。空行分段，否则微信里会挤成一坨。"""
         parts = [f"**【{EVENT_LABELS[self.type]}·{self.severity.zh}】{self.title}**", ""]
         parts += [f"- {b}" for b in self.body]
-        parts += ["", f"**该做什么**：{self.action}", "", f"_carryfarm {self.when}_"]
+        parts += ["", f"**该做什么**：{self.action}", "", f"_earnfarm {self.when}_"]
         return "\n".join(parts)
 
     def as_dict(self) -> dict[str, Any]:
         """Webhook 的结构化载荷。带上渲染好的 text，中转层想直接转发也行。"""
         return {
-            "source": "carryfarm",
+            "source": "earnfarm",
             "type": self.type.value,
             "subject": self.subject,
             "bucket": self.bucket,
@@ -719,7 +719,7 @@ def webhook_payload(alert: Alert, style: str) -> dict[str, Any]:
         return {"msg_type": "text", "content": {"text": alert.as_text()}}
     if style == "dingtalk":
         return {"msgtype": "text",
-                "text": {"content": f"carryfarm\n{alert.as_text()}"}}
+                "text": {"content": f"earnfarm\n{alert.as_text()}"}}
     if style == "bark":
         return {"title": alert.title, "body": alert.as_text(),
                 "group": EVENT_LABELS[alert.type],

@@ -859,8 +859,8 @@ WebSocket 侧另算：Classic API 单连接 ≤800 并发（private 按 UID、pu
 ## 主控接线依赖（本次不许改共享文件，列在这里由主控统一接）
 
 1. **`Venue.KUCOIN` 枚举成员此刻不存在。**
-   需要在 `carryfarm/models.py` 的 `Venue` 枚举里加 `KUCOIN = "kucoin"`
-   （值取小写 venue 名，与现有六家一致），否则 `carryfarm/exchanges/kucoin.py` 里的
+   需要在 `earnfarm/models.py` 的 `Venue` 枚举里加 `KUCOIN = "kucoin"`
+   （值取小写 venue 名，与现有六家一致），否则 `earnfarm/exchanges/kucoin.py` 里的
    `venue = Venue.KUCOIN` 直接 ImportError，模块都导不进来。
 2. **`ExchangeAdapter._request` 必须被本适配器覆写。**
    基类走 `json=send_body` 把序列化交给 httpx，与 KuCoin"被签的 body 字符串必须与

@@ -17,7 +17,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -25,8 +25,8 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.exchanges.htx import HtxAdapter
-from carryfarm.models import MarketKind
+from earnfarm.exchanges.htx import HtxAdapter
+from earnfarm.models import MarketKind
 
 CRED = Credential(api_key="test-access-key", api_secret="test-secret-key")
 
@@ -224,8 +224,8 @@ def test_broker_code_injected_into_body_only():
 
 def test_non_numeric_client_order_id_mapped_deterministically():
     """HTX 合约的 client_order_id 是 long，字符串 ID 要确定性地映射成数字。"""
-    _, body_a = _place("", cid="carryfarm-btc-leg1")
-    _, body_b = _place("", cid="carryfarm-btc-leg1")
+    _, body_a = _place("", cid="earnfarm-btc-leg1")
+    _, body_b = _place("", cid="earnfarm-btc-leg1")
     assert body_a["client_order_id"] == body_b["client_order_id"]
     assert 1 <= body_a["client_order_id"] < 2 ** 63
 
@@ -856,7 +856,7 @@ def test_stream_book_top_handles_gzip_and_heartbeat(monkeypatch):
             assert top.ask_qty == Decimal("0.205")
     run(main)
 
-    assert ws.sent[0] == {"sub": "market.BTC-USDT.bbo", "id": "carryfarm-0"}
+    assert ws.sent[0] == {"sub": "market.BTC-USDT.bbo", "id": "earnfarm-0"}
     # 心跳必须原样回填 ts，连续 5 次不回就被断连
     assert {"pong": 18212558000} in ws.sent
 

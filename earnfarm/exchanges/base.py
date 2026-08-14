@@ -25,6 +25,7 @@ from ..models import (
     FeeSchedule,
     Instrument,
     Position,
+    TradeFill,
     Venue,
 )
 
@@ -327,6 +328,19 @@ class ExchangeAdapter(abc.ABC):
     async def fetch_leverage_tiers(self, symbol: str) -> Sequence[tuple[Decimal, Decimal]]:
         """杠杆档位 [(名义上限, 最大杠杆), ...] 升序。用于避开档位边界——
         贴着边界开仓，价格一动就会跨档触发降杠杆和追加保证金。"""
+
+    async def fetch_my_trades(self, symbol: str, since_ms: int,
+                              until_ms: int | None = None) -> Sequence[TradeFill]:
+        """历史成交（逐笔 fill），升序。只服务操作复盘分析，不进交易路径。
+
+        故意**不做成抽象方法**：九家适配器不必为一个分析功能全体陪跑，
+        没实现的家在这里抛 NotImplementedError，分析页把原话展示给用户。
+        实现约定（照 fetch_funding_history 的纪律）：
+        - 适配器内部翻页补齐 [since_ms, until_ms] 整段，按成交 id 去重后升序返回
+        - 手续费/已实现盈亏保留交易所原始计价资产，不折算
+        """
+        raise NotImplementedError(
+            f"{self.venue.value} 尚未实现成交历史查询（fetch_my_trades）")
 
     # ---- 通用能力 -------------------------------------------------------
 

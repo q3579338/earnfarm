@@ -239,6 +239,28 @@ class Position:
 
 
 @dataclass(frozen=True, slots=True)
+class TradeFill:
+    """一笔历史成交（fill）。只用于操作复盘分析，不进任何下单/风控路径。
+
+    手续费和已实现盈亏都以交易所返回的原始计价资产记录，不做折算——
+    折算需要费率发生时刻的汇率，拿现价换算会把成本算错还看不出来。
+    """
+
+    market: str
+    symbol: str
+    ts_ms: int
+    side: str                 # "buy" / "sell"
+    price: Decimal
+    qty: Decimal              # base 币数量，恒为正；方向看 side
+    quote_qty: Decimal        # 成交名义额（quote 计价）
+    fee: Decimal
+    fee_asset: str
+    realized_pnl: Decimal     # 该笔成交实现的盈亏（永续平仓腿才非零）
+    maker: bool
+    order_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class Leg:
     """对冲的一条腿。"""
 

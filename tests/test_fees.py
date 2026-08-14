@@ -23,23 +23,23 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from carryfarm.config import Config
-from carryfarm.exchanges.base import Credential
-from carryfarm.exchanges.binance import BinanceAdapter
-from carryfarm.exchanges.bitget import BitgetAdapter
-from carryfarm.exchanges.bybit import BybitAdapter
-from carryfarm.exchanges.gate import GateAdapter
-from carryfarm.exchanges.htx import HtxAdapter
-from carryfarm.exchanges.okx import OkxAdapter
-from carryfarm.models import BookDepth, FeeSchedule, Venue
-from carryfarm.public_feed import (
+from earnfarm.config import Config
+from earnfarm.exchanges.base import Credential
+from earnfarm.exchanges.binance import BinanceAdapter
+from earnfarm.exchanges.bitget import BitgetAdapter
+from earnfarm.exchanges.bybit import BybitAdapter
+from earnfarm.exchanges.gate import GateAdapter
+from earnfarm.exchanges.htx import HtxAdapter
+from earnfarm.exchanges.okx import OkxAdapter
+from earnfarm.models import BookDepth, FeeSchedule, Venue
+from earnfarm.public_feed import (
     DEFAULT_TAKER,
     PublicFeed,
     RawFunding,
     _basis_of,
 )
-from carryfarm.scoring import HistoryStats
-from carryfarm.session import FEE_CACHE_TTL_S, Session
+from earnfarm.scoring import HistoryStats
+from earnfarm.session import FEE_CACHE_TTL_S, Session
 
 CRED = Credential(api_key="k", api_secret="s", passphrase="p")
 
@@ -520,7 +520,7 @@ def test_every_estimated_basis_has_an_explanation():
 
     "real" 是唯一不需要提示的——那一行的成本本来就是按你的真实档位算的。
     """
-    from carryfarm.ui.opportunities import FEE_BASIS_HINT
+    from earnfarm.ui.opportunities import FEE_BASIS_HINT
 
     for basis in ("default", "partial"):
         assert basis in FEE_BASIS_HINT
@@ -530,7 +530,7 @@ def test_every_estimated_basis_has_an_explanation():
 
 def test_the_summary_line_says_when_the_cost_is_estimated():
     """悬停提示不够——整榜按挂牌价估算时，用户不把鼠标放上去也得知道。"""
-    from carryfarm.ui.opportunities import OpportunityBoard as B
+    from earnfarm.ui.opportunities import OpportunityBoard as B
 
     _, default_row = board(None)
     _, real_row = board(VIP3)
@@ -584,7 +584,7 @@ def test_fill_mode_switch_triggers_a_full_rescore_not_a_render():
     UI 那层的约定是：filters.fill_mode 一变就调 on_rescore（由 app 层接到
     「从库重评整榜」上），而不是像其他过滤器那样只 render。
     """
-    from carryfarm.ui.opportunities import OpportunityBoard
+    from earnfarm.ui.opportunities import OpportunityBoard
 
     b = OpportunityBoard()
     calls = []
@@ -604,7 +604,7 @@ def test_fill_mode_switch_triggers_a_full_rescore_not_a_render():
 def test_summary_line_pins_the_maker_assumption_on_the_whole_board():
     """挂单口径下整榜都是「假设必成交」的上限，摘要行必须钉着这句话——
     跟哪一行展开没展开无关。"""
-    from carryfarm.ui.opportunities import OpportunityBoard
+    from earnfarm.ui.opportunities import OpportunityBoard
 
     b = OpportunityBoard()
     assert "挂单" not in b._summary_text([])
@@ -637,8 +637,8 @@ def test_pairing_falls_back_to_the_next_best_legs_when_the_extreme_leg_is_empty(
     而"币安多 / Backpack 空"那对费差 120% 年化、两边都是深盘——费率极端的腿
     往往正是盘子最小的腿，只试极端对会系统性错过"次优费差 × 真实深度"。
     """
-    from carryfarm.models import Venue
-    from carryfarm.public_feed import PublicFeed, RawFunding
+    from earnfarm.models import Venue
+    from earnfarm.public_feed import PublicFeed, RawFunding
 
     class ThreeLegFeed(PublicFeed):
         async def fetch_funding(self):
@@ -675,8 +675,8 @@ def test_pairing_falls_back_to_the_next_best_legs_when_the_extreme_leg_is_empty(
 
 def test_pairing_still_drops_the_base_when_every_combo_is_illiquid():
     """所有组合都没盘口时才允许丢弃——丢弃是最后手段，不是默认动作。"""
-    from carryfarm.models import Venue
-    from carryfarm.public_feed import PublicFeed, RawFunding
+    from earnfarm.models import Venue
+    from earnfarm.public_feed import PublicFeed, RawFunding
 
     class AllDeadFeed(PublicFeed):
         async def fetch_funding(self):

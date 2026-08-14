@@ -11,9 +11,9 @@ from dataclasses import replace
 
 import pytest
 
-from carryfarm.config import Config
-from carryfarm.models import Venue
-from carryfarm.ui.app import MIN_VENUES, META_VENUES, AppState
+from earnfarm.config import Config
+from earnfarm.models import Venue
+from earnfarm.ui.app import MIN_VENUES, META_VENUES, AppState
 
 
 @pytest.fixture

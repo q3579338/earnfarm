@@ -33,6 +33,7 @@ from ..models import (
     Instrument,
     MarketKind,
     Position,
+    TradeFill,
     Venue,
 )
 from .base import (
@@ -70,6 +71,10 @@ INTERVAL_PROBE_WINDOW = 8
 # 历史翻页硬闸。1000 条/页，32 页足够任何合约的完整历史，
 # 同时挡住"服务端无视 startTime"时的无限翻页
 HISTORY_MAX_PAGES = 32
+
+# userTrades 的 startTime/endTime 窗口上限：官方规定不得超过 7 天，
+# 超了直接报 -1127。翻整段历史必须按窗切片
+USER_TRADES_WINDOW_MS = 7 * 86_400_000
 
 # 保持 5000 并主动校时，不靠调大 recvWindow 掩盖漂移——
 # 那会让延迟到达的撤单在你以为它超时之后才生效
@@ -211,6 +216,8 @@ class BinanceAdapter(ExchangeAdapter):
         self._in_clock_sync = False
         # fundingRate 单次上限 1000 条（测试里调小以验证翻页）
         self._history_page_size = 1000
+        # userTrades 单页上限同为 1000（测试里调小以验证翻页）
+        self._trades_page_size = 1000
         # 深度取多少档（测试里调小以验证"档位不足不外推"）
         self._depth_limit = DEFAULT_DEPTH_LIMIT
 
@@ -450,6 +457,11 @@ class BinanceAdapter(ExchangeAdapter):
     @property
     def _leverage_path(self) -> str:
         return "/papi/v1/um/leverage" if self.portfolio_margin else "/fapi/v1/leverage"
+
+    @property
+    def _user_trades_path(self) -> str:
+        # papi 端点按 /um/ 前缀规律推导（同 _open_orders_path 的处境），上线前需核对
+        return "/papi/v1/um/userTrades" if self.portfolio_margin else "/fapi/v1/userTrades"
 
     # ---- 元数据 ---------------------------------------------------------
 
@@ -1028,6 +1040,72 @@ class BinanceAdapter(ExchangeAdapter):
                                    signed=True, params={"symbol": symbol})
         rows = data if isinstance(data, list) else [data]
         return tuple(self._order_result(r, fallback_cid="") for r in rows)
+
+    async def fetch_my_trades(self, symbol: str, since_ms: int,
+                              until_ms: int | None = None) -> Sequence[TradeFill]:
+        """GET /fapi/v1/userTrades（权重 5）。逐笔成交，含手续费与已实现盈亏。
+
+        服务端约束与对策：
+        - startTime/endTime 窗口不得超过 7 天（超了报 -1127）→ 整段按 7 天切窗
+        - fromId 不能与 startTime/endTime 同传 → 窗内第一页用时间，
+          撑满页（可能还有更多）后改用 fromId=末条id+1 续翻，读到越过窗尾为止
+        - fromId 翻页会越进下一窗的时段 → 按成交 id 去重，最后统一升序
+
+        价格/数量保持交易所原生计价（1000PEPE 这类符号不折算乘数）——
+        复盘要和用户在币安界面看到的数字对得上，折算过的反而认不出。
+        走 quota="market"：这是分析流量，不许挤占风控路径的预留配额。
+        """
+        until_ms = self.timestamp_ms() if until_ms is None else until_ms
+        page_size = self._trades_page_size
+        by_id: dict[str, TradeFill] = {}
+
+        window_start = since_ms
+        while window_start <= until_ms:
+            window_end = min(window_start + USER_TRADES_WINDOW_MS - 1, until_ms)
+            rows = await self._request(
+                "GET", self._user_trades_path, quota="market", signed=True,
+                params={"symbol": symbol, "startTime": window_start,
+                        "endTime": window_end, "limit": page_size})
+            rows = rows if isinstance(rows, list) else []
+            for r in rows:
+                by_id[str(r.get("id", ""))] = self._trade_fill(r)
+
+            pages = 1
+            while len(rows) == page_size and pages < HISTORY_MAX_PAGES:
+                last_id = int(rows[-1].get("id", 0))
+                rows = await self._request(
+                    "GET", self._user_trades_path, quota="market", signed=True,
+                    params={"symbol": symbol, "fromId": last_id + 1,
+                            "limit": page_size})
+                rows = rows if isinstance(rows, list) else []
+                pages += 1
+                done = False
+                for r in rows:
+                    if int(r.get("time", 0)) > window_end:
+                        done = True
+                        break
+                    by_id[str(r.get("id", ""))] = self._trade_fill(r)
+                if done:
+                    break
+            window_start = window_end + 1
+
+        return tuple(sorted(by_id.values(), key=lambda f: (f.ts_ms, int(f.order_id or 0))))
+
+    def _trade_fill(self, row: Mapping[str, Any]) -> TradeFill:
+        return TradeFill(
+            market=self.market,
+            symbol=str(row.get("symbol", "")),
+            ts_ms=int(row.get("time", 0)),
+            side=str(row.get("side", "")).lower(),
+            price=_dec(row.get("price")),
+            qty=_dec(row.get("qty")),
+            quote_qty=_dec(row.get("quoteQty")),
+            fee=_dec(row.get("commission")),
+            fee_asset=str(row.get("commissionAsset", "")),
+            realized_pnl=_dec(row.get("realizedPnl")),
+            maker=bool(row.get("maker", False)),
+            order_id=str(row.get("orderId", "")),
+        )
 
     async def set_leverage(self, symbol: str, leverage: Decimal) -> None:
         # leverage 是整数参数，向下取整（要 3.7 倍时给 3 倍，宁可保守）

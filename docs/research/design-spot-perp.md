@@ -337,7 +337,7 @@ Backpack 是单一跨保证金钱包,现货与永续**没有内部划转**这回
 "可派" = 自包含、有参照实现、错了不污染共享路径,可交给实现代理;"主控" = 共享热文件,
 改动牵动全管道口径,主会话亲自落。
 
-| # | 文件(绝对路径前缀 `C:\Users\QUBIC\skills\carryfarm\carryfarm\`) | 锚点 | 改动 | 归属 | 估行数 |
+| # | 文件(绝对路径前缀 `C:\Users\QUBIC\skills\earnfarm\earnfarm\`) | 锚点 | 改动 | 归属 | 估行数 |
 |---|---|---|---|---|---|
 | 1 | `exchanges\backpack.py` | :338-358 构造器;各抽象方法 | 拆 SPOT 拒绝,按 §4.1 表加现货分支(参照 okx.py 全套) | **可派** | +350~450 |
 | 2 | `exchanges\base.py` | :146-150;类属性区 | quota 可注入 + supported_kinds 默认值 | 主控 | +25~40 |

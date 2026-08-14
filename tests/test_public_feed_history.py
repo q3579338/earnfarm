@@ -17,10 +17,10 @@ import asyncio
 import time
 from decimal import Decimal
 
-from carryfarm.history import HOUR_MS, HistoryBackfiller
-from carryfarm.public_feed import PublicFeed, backfill_targets
-from carryfarm.scoring import HistoryStats, LegQuote, ScoredOpportunity, score_pair
-from carryfarm.storage import Storage
+from earnfarm.history import HOUR_MS, HistoryBackfiller
+from earnfarm.public_feed import PublicFeed, backfill_targets
+from earnfarm.scoring import HistoryStats, LegQuote, ScoredOpportunity, score_pair
+from earnfarm.storage import Storage
 
 NOW_MS = 1_785_000_000_000 // (8 * HOUR_MS) * (8 * HOUR_MS)
 NOW_S = NOW_MS / 1000
@@ -184,8 +184,8 @@ def test_lookback_covers_the_chosen_holding_period():
     """固定回看 30 天配上"计划持有 1 月"，stability 永远凑不出一个窗口
     （它要 horizon+12 小时），机会榜整列会恒为"数据不足"——
     那不是数据不够，是参数配错了，而用户完全看不出区别。"""
-    from carryfarm.scoring import stability
-    from carryfarm.ui.app import _history_days_for
+    from earnfarm.scoring import stability
+    from earnfarm.ui.app import _history_days_for
 
     for horizon_h in (72, 168, 336, 720):
         days = _history_days_for(horizon_h)
@@ -262,7 +262,7 @@ def test_a_dead_venue_is_not_reported_as_connected():
     而用户看到的价差是拿五家算出来的。跨所套利里少看一家，
     价差不是"少了几个机会"，是**错的**。
     """
-    from carryfarm.models import Venue
+    from earnfarm.models import Venue
 
     feed = PublicFeed()
 
@@ -293,7 +293,7 @@ def test_ui_reports_venue_health_from_venues_with_data():
     """
     import inspect
 
-    from carryfarm.ui import app as ui_app
+    from earnfarm.ui import app as ui_app
 
     src = inspect.getsource(ui_app.refresh_opportunities)
     assert "venues_with_data" in src
@@ -309,8 +309,8 @@ def test_ui_reports_venue_health_from_venues_with_data():
 
 def test_normalize_base_hyperliquid_k_prefix():
     """小写 k 千倍前缀要剥，且必须在 upper() 之前判。"""
-    from carryfarm.models import Venue
-    from carryfarm.public_feed import normalize_base
+    from earnfarm.models import Venue
+    from earnfarm.public_feed import normalize_base
 
     assert normalize_base("kPEPE", Venue.HYPERLIQUID) == "PEPE"
     assert normalize_base("kBONK", Venue.HYPERLIQUID) == "BONK"
@@ -323,8 +323,8 @@ def test_normalize_base_hyperliquid_k_prefix():
 def test_normalize_base_never_strips_real_k_coins():
     """KAVA→AVA 不是配不上对，是**配错对**：AVA 是别家真实存在的另一个币，
     凑成的"对冲"两条腿是不同资产，等于双向裸奔。"""
-    from carryfarm.models import Venue
-    from carryfarm.public_feed import normalize_base
+    from earnfarm.models import Venue
+    from earnfarm.public_feed import normalize_base
 
     for coin in ("KAVA", "KAS", "KSM", "KAITO", "KMNO"):
         assert normalize_base(coin, Venue.HYPERLIQUID) == coin
@@ -334,8 +334,8 @@ def test_normalize_base_never_strips_real_k_coins():
 
 def test_normalize_base_kucoin_m_suffix():
     """KuCoin 合约尾缀 M + XBT 别名。差一个字符 = 整家配对数恒等于 0。"""
-    from carryfarm.models import Venue
-    from carryfarm.public_feed import normalize_base
+    from earnfarm.models import Venue
+    from earnfarm.public_feed import normalize_base
 
     assert normalize_base("XBTUSDTM", Venue.KUCOIN) == "BTC"
     assert normalize_base("XBTUSDM", Venue.KUCOIN) == "BTC"      # 反向合约
@@ -348,8 +348,8 @@ def test_normalize_base_kucoin_m_suffix():
 
 def test_normalize_base_m_suffix_is_venue_scoped():
     """M 只对 KuCoin 剥。塞进共享后缀表会给另外六家开误剥口子。"""
-    from carryfarm.models import Venue
-    from carryfarm.public_feed import normalize_base
+    from earnfarm.models import Venue
+    from earnfarm.public_feed import normalize_base
 
     # 假想某家有个以 M 结尾的币（如 PYTHM 之类），别家不许被剥
     assert normalize_base("OMUSDT", Venue.BINANCE) == "OM"
@@ -358,8 +358,8 @@ def test_normalize_base_m_suffix_is_venue_scoped():
 
 def test_normalize_base_existing_venues_unchanged():
     """六家的既有行为一个都不能变——这是回归钉子。"""
-    from carryfarm.models import Venue
-    from carryfarm.public_feed import normalize_base
+    from earnfarm.models import Venue
+    from earnfarm.public_feed import normalize_base
 
     assert normalize_base("BTCUSDT", Venue.BINANCE) == "BTC"
     assert normalize_base("BTC-USDT-SWAP", Venue.OKX) == "BTC"
@@ -372,8 +372,8 @@ def test_normalize_base_existing_venues_unchanged():
 def test_normalize_base_backpack_usdc_suffix():
     """Backpack 计价是 USDC（BTC_USDC_PERP）。_PERP 共享表剥掉后剩 BTC_USDC，
     USDC 只能按 venue 剥——塞进共享表会给别家的 USDC 本位符号开误剥口子。"""
-    from carryfarm.models import Venue
-    from carryfarm.public_feed import normalize_base
+    from earnfarm.models import Venue
+    from earnfarm.public_feed import normalize_base
 
     assert normalize_base("BTC_USDC_PERP", Venue.BACKPACK) == "BTC"
     assert normalize_base("SOL_USDC_PERP", Venue.BACKPACK) == "SOL"

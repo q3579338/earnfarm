@@ -644,7 +644,7 @@ class HtxAdapter(ExchangeAdapter):
                 async with websockets.connect(self.ws_market_url, ping_interval=None) as ws:
                     for idx, symbol in enumerate(symbols):
                         await ws.send(json.dumps(
-                            {"sub": f"market.{symbol}.bbo", "id": f"carryfarm-{idx}"}))
+                            {"sub": f"market.{symbol}.bbo", "id": f"earnfarm-{idx}"}))
                     backoff = 1.0
                     async for raw in ws:
                         msg = self._ws_decode(raw)

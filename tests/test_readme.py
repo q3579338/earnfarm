@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from carryfarm.config import MIN_MARKET_INTERVAL_S, load
+from earnfarm.config import MIN_MARKET_INTERVAL_S, load
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 

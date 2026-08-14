@@ -21,8 +21,8 @@ from decimal import Decimal
 
 import pytest
 
-from carryfarm import alerts as alerts_mod
-from carryfarm.alerts import (
+from earnfarm import alerts as alerts_mod
+from earnfarm.alerts import (
     DEFAULT_RULES,
     DETECT_INTERVAL_S,
     Alert,
@@ -51,13 +51,13 @@ from carryfarm.alerts import (
     unwind_alert,
     webhook_payload,
 )
-from carryfarm.config import (
+from earnfarm.config import (
     AlertsConfig,
     TelegramAlertConfig,
     WeChatAlertConfig,
     WebhookAlertConfig,
 )
-from carryfarm.safety import (
+from earnfarm.safety import (
     BreakerDecision,
     BreakerLevel,
     ExposureSnapshot,
@@ -66,7 +66,7 @@ from carryfarm.safety import (
     UnwindPhase,
     classify_exposure,
 )
-from carryfarm.scoring import HistoryStats, LegQuote, score_pair
+from earnfarm.scoring import HistoryStats, LegQuote, score_pair
 
 NOW = 1_785_000_000.0
 
@@ -594,7 +594,7 @@ def test_webhook_styles():
     assert webhook_payload(a, "dingtalk")["msgtype"] == "text"
     assert webhook_payload(a, "bark")["title"] == a.title
     raw = webhook_payload(a, "raw")
-    assert raw["source"] == "carryfarm" and raw["action"] == a.action
+    assert raw["source"] == "earnfarm" and raw["action"] == a.action
 
 
 def test_webhook_bark_level_escalates_for_severe_alerts():
@@ -766,39 +766,39 @@ def test_enabled_channel_without_secret_is_skipped_loudly():
     """开了通道但没读到密钥，必须记下原因给界面看。
     静默地不发告警，比配错更危险——用户以为自己有告警，实际只有本地日志。"""
     cfg = AlertsConfig(wechat=WeChatAlertConfig(enabled=True,
-                                                token_env="CARRYFARM_TEST_ABSENT"))
+                                                token_env="EARNFARM_TEST_ABSENT"))
     plan = build_channels(cfg)
     assert [c.name for c in plan.channels] == ["log"]
     assert "wechat" in plan.skipped and "token" in plan.skipped["wechat"]
 
 
 def test_secret_comes_from_env(monkeypatch):
-    monkeypatch.setenv("CARRYFARM_TEST_TOKEN", FAKE_TOKEN)
+    monkeypatch.setenv("EARNFARM_TEST_TOKEN", FAKE_TOKEN)
     cfg = AlertsConfig(wechat=WeChatAlertConfig(enabled=True,
-                                                token_env="CARRYFARM_TEST_TOKEN"))
+                                                token_env="EARNFARM_TEST_TOKEN"))
     plan = build_channels(cfg, poster=FakePoster({"code": 200}))
     assert [c.name for c in plan.channels] == ["log", "wechat"]
 
 
 def test_env_beats_config_literal(monkeypatch):
     """环境变量优先：服务器上换 key 不用改配置文件。"""
-    monkeypatch.setenv("CARRYFARM_TEST_TOKEN", "from-env")
-    assert resolve_secret("from-file", "CARRYFARM_TEST_TOKEN") == "from-env"
-    monkeypatch.delenv("CARRYFARM_TEST_TOKEN")
-    assert resolve_secret("from-file", "CARRYFARM_TEST_TOKEN") == "from-file"
-    assert resolve_secret("", "CARRYFARM_TEST_TOKEN") == ""
+    monkeypatch.setenv("EARNFARM_TEST_TOKEN", "from-env")
+    assert resolve_secret("from-file", "EARNFARM_TEST_TOKEN") == "from-env"
+    monkeypatch.delenv("EARNFARM_TEST_TOKEN")
+    assert resolve_secret("from-file", "EARNFARM_TEST_TOKEN") == "from-file"
+    assert resolve_secret("", "EARNFARM_TEST_TOKEN") == ""
 
 
 def test_engine_from_config_wires_everything(monkeypatch):
-    monkeypatch.setenv("CARRYFARM_TEST_TG", FAKE_TOKEN)
-    monkeypatch.setenv("CARRYFARM_TEST_CHAT", FAKE_CHAT)
-    monkeypatch.setenv("CARRYFARM_TEST_HOOK", "https://example.invalid/hook")
+    monkeypatch.setenv("EARNFARM_TEST_TG", FAKE_TOKEN)
+    monkeypatch.setenv("EARNFARM_TEST_CHAT", FAKE_CHAT)
+    monkeypatch.setenv("EARNFARM_TEST_HOOK", "https://example.invalid/hook")
     cfg = AlertsConfig(
         silence_opportunity_s=1234,
         mute=("stale",),
-        telegram=TelegramAlertConfig(enabled=True, bot_token_env="CARRYFARM_TEST_TG",
-                                     chat_id_env="CARRYFARM_TEST_CHAT"),
-        webhook=WebhookAlertConfig(enabled=True, url_env="CARRYFARM_TEST_HOOK",
+        telegram=TelegramAlertConfig(enabled=True, bot_token_env="EARNFARM_TEST_TG",
+                                     chat_id_env="EARNFARM_TEST_CHAT"),
+        webhook=WebhookAlertConfig(enabled=True, url_env="EARNFARM_TEST_HOOK",
                                    style="feishu"),
     )
     poster = FakePoster({"ok": True})
@@ -819,7 +819,7 @@ def test_config_rejects_unknown_mute_and_style():
 
 def test_config_alerts_section_parses_nested_tables(tmp_path):
     """[alerts.telegram] 这种嵌套段要能从 config.toml 读进来。"""
-    from carryfarm.config import load
+    from earnfarm.config import load
 
     path = tmp_path / "config.toml"
     path.write_text(

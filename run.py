@@ -1,6 +1,6 @@
 """启动脚本。
 
-必须用顶层脚本而不是 `python -m carryfarm.ui.app`：NiceGUI 的 ui.run() 会用
+必须用顶层脚本而不是 `python -m earnfarm.ui.app`：NiceGUI 的 ui.run() 会用
 runpy.run_path 重跑入口文件，那条路径不带包上下文，包内的相对导入会全部炸掉。
 
 两种形态：
@@ -18,9 +18,9 @@ import sys
 def main() -> None:
     argv = sys.argv[1:]
     if "--watch" in argv:
-        from carryfarm.watch import main as watch_main
+        from earnfarm.watch import main as watch_main
         raise SystemExit(watch_main([a for a in argv if a != "--watch"]))
-    from carryfarm.ui.app import main as ui_main
+    from earnfarm.ui.app import main as ui_main
     ui_main()
 
 

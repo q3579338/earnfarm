@@ -29,7 +29,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -37,7 +37,7 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.exchanges.kucoin import (
+from earnfarm.exchanges.kucoin import (
     ACTUAL_FEE_NOTE,
     DEPTH_LEVELS_PER_SIDE,
     DEPTH_PATH,
@@ -45,7 +45,7 @@ from carryfarm.exchanges.kucoin import (
     KucoinAdapter,
     _ContractMeta,
 )
-from carryfarm.models import MarketKind, Venue
+from earnfarm.models import MarketKind, Venue
 
 API_KEY = "kucoin-key-0001"
 API_SECRET = "kucoin-secret-0002"

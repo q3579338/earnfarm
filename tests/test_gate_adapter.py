@@ -22,7 +22,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -30,12 +30,12 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.exchanges.gate import (
+from earnfarm.exchanges.gate import (
     EMPTY_BODY_SHA512,
     GateAdapter,
     _ContractMeta,
 )
-from carryfarm.models import MarketKind
+from earnfarm.models import MarketKind
 
 API_KEY = "gate-key-0001"
 API_SECRET = "gate-secret-0002"
@@ -666,7 +666,7 @@ def test_book_depth_rejects_bad_band_and_empty_side():
 def test_book_depth_feeds_scoring_slippage_directly():
     """返回值要能直接喂 scoring.slippage_rate：
     depth_notional 大了之后，同样的仓位不再被当成"穿透整个簿"。"""
-    from carryfarm.scoring import LegQuote, slippage_rate
+    from earnfarm.scoring import LegQuote, slippage_rate
 
     rec = Recorder({("GET", "/api/v4/futures/usdt/order_book"): BTC_DEPTH_BOOK})
     with adapter(rec) as ad:

@@ -40,8 +40,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-import carryfarm.exchanges.backpack as backpack
-from carryfarm.exchanges.backpack import (
+import earnfarm.exchanges.backpack as backpack
+from earnfarm.exchanges.backpack import (
     ACTUAL_FEE_NOTE,
     BOOK_TOP_LIMIT,
     DEPTH_LIMIT,
@@ -54,7 +54,7 @@ from carryfarm.exchanges.backpack import (
     _INSTRUCTIONS,
     _MarketMeta,
 )
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -62,12 +62,12 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.models import MarketKind, Venue
+from earnfarm.models import MarketKind, Venue
 
 # ---- 固定测试密钥对：ED25519 确定性签名的前提 ------------------------------
 # seed 固定 → 公私钥固定 → 同一份签名串永远得到同一个签名（RFC 8032），
 # "带不带返佣码逐字节相同"这类比对才有意义。
-TEST_SEED = b"carryfarm-backpack-test-seed-01!"          # 恰好 32 字节
+TEST_SEED = b"earnfarm-backpack-test-seed-012!"         # 恰好 32 字节
 _SK = ed25519.Ed25519PrivateKey.from_private_bytes(TEST_SEED)
 _PUB = _SK.public_key()
 PUB_RAW = _PUB.public_bytes(serialization.Encoding.Raw,

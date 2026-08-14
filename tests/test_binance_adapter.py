@@ -16,7 +16,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -24,8 +24,8 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.exchanges.binance import BinanceAdapter
-from carryfarm.models import Instrument, MarketKind
+from earnfarm.exchanges.binance import BinanceAdapter
+from earnfarm.models import Instrument, MarketKind
 
 # 官方文档示例的 key/secret 与预期签名
 OFFICIAL_SECRET = "NhqPtmdSJYdKjVHjA7PZj4Mge3R5YNiP1e3UZjInClVN65XAbvqqM6A7H5fATj0j"
@@ -999,3 +999,121 @@ def test_spot_and_margin_raise_not_implemented():
     for kind in (MarketKind.SPOT, MarketKind.MARGIN):
         with pytest.raises(NotImplementedError):
             make_adapter(json_route({}), market_kind=kind)
+
+
+# ---- userTrades（操作复盘用的成交历史）------------------------------------
+
+def _trade_row(tid: int, ts: int, side: str = "BUY", *, price: str = "10",
+               qty: str = "2", pnl: str = "0", maker: bool = False) -> dict:
+    return {
+        "id": tid, "orderId": 900 + tid, "symbol": "OPUSDT", "side": side,
+        "price": price, "qty": qty,
+        "quoteQty": str(Decimal(price) * Decimal(qty)),
+        "commission": "0.01", "commissionAsset": "USDT",
+        "time": ts, "maker": maker, "buyer": side == "BUY",
+        "realizedPnl": pnl,
+    }
+
+
+def test_fetch_my_trades_parses_fields_and_sorts_ascending():
+    rows = [_trade_row(2, 2000, "SELL", pnl="1.5", maker=True),
+            _trade_row(1, 1000)]
+    ad = make_adapter(json_route({"/fapi/v1/userTrades": rows}))
+    fills = run(ad.fetch_my_trades("OPUSDT", 0, 5000))
+
+    assert [f.ts_ms for f in fills] == [1000, 2000]
+    buy, sell = fills
+    assert buy.side == "buy" and sell.side == "sell"
+    assert buy.price == Decimal("10") and buy.qty == Decimal("2")
+    assert buy.quote_qty == Decimal("20")
+    assert buy.fee == Decimal("0.01") and buy.fee_asset == "USDT"
+    assert sell.realized_pnl == Decimal("1.5")
+    assert sell.maker is True and buy.maker is False
+    assert sell.order_id == "902"
+    assert buy.market == "binance:perp"
+
+
+def test_fetch_my_trades_paginates_with_from_id_after_full_page():
+    """撑满页说明后面可能还有：续页必须换 fromId 且不带时间参数
+    （官方规定 fromId 不能与 startTime/endTime 同传）。"""
+    all_rows = [_trade_row(i, 1000 + i) for i in range(1, 6)]     # id 1..5
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        params = request.url.params
+        if "fromId" in params:
+            assert "startTime" not in params and "endTime" not in params
+            start = int(params["fromId"])
+            page = [r for r in all_rows if r["id"] >= start][:2]
+        else:
+            page = all_rows[:2]
+        return httpx.Response(200, content=json.dumps(page),
+                              headers={"Content-Type": "application/json"})
+
+    ad = make_adapter(handler)
+    ad._trades_page_size = 2
+    fills = run(ad.fetch_my_trades("OPUSDT", 0, 100_000))
+
+    assert len(fills) == 5                                # 去重后全量
+    assert [f.ts_ms for f in fills] == [1001, 1002, 1003, 1004, 1005]
+    # 第一页按时间，后面按 fromId 翻
+    assert "startTime" in captured[0].url.params
+    assert [int(r.url.params["fromId"]) for r in captured[1:]] == [3, 5]
+
+
+def test_fetch_my_trades_chunks_window_to_seven_days():
+    """startTime/endTime 跨度超 7 天服务端直接报错（-1127），必须切窗。"""
+    from earnfarm.exchanges.binance import USER_TRADES_WINDOW_MS
+
+    captured: list[httpx.Request] = []
+    ad = make_adapter(json_route({"/fapi/v1/userTrades": []}, captured))
+    run(ad.fetch_my_trades("OPUSDT", 0, USER_TRADES_WINDOW_MS + 5))
+
+    spans = [(int(r.url.params["startTime"]), int(r.url.params["endTime"]))
+             for r in captured]
+    assert len(spans) == 2
+    for start, end in spans:
+        assert end - start < USER_TRADES_WINDOW_MS
+    # 两窗必须无缝衔接，漏一毫秒就可能漏一笔成交
+    assert spans[1][0] == spans[0][1] + 1
+    assert spans[1][1] == USER_TRADES_WINDOW_MS + 5
+
+
+def test_fetch_my_trades_from_id_page_stops_at_window_end():
+    """fromId 翻页会越进下一窗的时段，越界的行必须丢弃并停止本窗翻页，
+    否则同一笔成交会在下一窗再进一次（去重兜底）且多烧一页配额。"""
+    from earnfarm.exchanges.binance import USER_TRADES_WINDOW_MS
+
+    w = USER_TRADES_WINDOW_MS
+    in_window = [_trade_row(1, 100), _trade_row(2, 200)]
+    beyond = [_trade_row(3, w + 100), _trade_row(4, w + 200)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        if "fromId" in params:
+            start = int(params["fromId"])       # 续页：从该 id 起（会越进下一窗）
+            page = [r for r in in_window + beyond if r["id"] >= start][:2]
+        elif int(params["startTime"]) == 0:
+            page = in_window                    # 第一窗撑满页
+        else:
+            page = beyond                       # 第二窗按时间正常返回
+        return httpx.Response(200, content=json.dumps(page),
+                              headers={"Content-Type": "application/json"})
+
+    ad = make_adapter(handler)
+    ad._trades_page_size = 2
+    fills = run(ad.fetch_my_trades("OPUSDT", 0, w + 300))
+
+    # 4 笔各出现一次：越界行在第一窗被丢弃，第二窗按时间正常拿到
+    assert len(fills) == 4
+    assert [f.ts_ms for f in fills] == [100, 200, w + 100, w + 200]
+
+
+def test_fetch_my_trades_uses_papi_path_under_portfolio_margin():
+    captured: list[httpx.Request] = []
+    ad = make_adapter(json_route({"/papi/v1/um/userTrades": []}, captured),
+                      portfolio_margin=True)
+    run(ad.fetch_my_trades("OPUSDT", 0, 1000))
+    assert captured[0].url.host == "papi.binance.com"
+    assert captured[0].url.path == "/papi/v1/um/userTrades"

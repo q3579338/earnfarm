@@ -1,4 +1,4 @@
-# carryfarm
+# earnfarm
 
 跨交易所资金费率套利工具。在币安、OKX、HTX、Gate、Bybit、Bitget、Hyperliquid、
 KuCoin 八家之间找同一个币的资金费差，一边做多一边做空，赚两边费率的差额，
@@ -104,7 +104,7 @@ python run.py --port 9000
 python run.py --offline      # 用离线演示数据，不联网
 ```
 
-必须走 `run.py` 这个顶层脚本，不能 `python -m carryfarm.ui.app`：NiceGUI 的
+必须走 `run.py` 这个顶层脚本，不能 `python -m earnfarm.ui.app`：NiceGUI 的
 `ui.run()` 会用 `runpy.run_path` 重跑入口文件，那条路径不带包上下文，包内的
 相对导入会全部炸掉。
 
@@ -117,8 +117,8 @@ python run.py --offline      # 用离线演示数据，不联网
 python run.py --watch                  # 跑起来，有机会才推送
 python run.py --watch --once           # 只跑一轮就退出（cron / 排错）
 python run.py --watch --status         # 问一句"它还活着吗"
-python run.py --watch --log-file /var/log/carryfarm.log   # 自动轮转 5MB×3
-python run.py --watch --config /etc/carryfarm.toml
+python run.py --watch --log-file /var/log/earnfarm.log   # 自动轮转 5MB×3
+python run.py --watch --config /etc/earnfarm.toml
 python run.py --watch -v               # 连 httpx 的每个请求都打出来
 ```
 
@@ -128,10 +128,10 @@ python run.py --watch -v               # 连 httpx 的每个请求都打出来
 
 ```
 行情源：6 家公开端点（binance、okx、htx、gate、bybit、bitget），实际连通以首轮行情为准
-账户：6 个；推进已有仓位：否（凭据库没解锁，要解锁请设环境变量 CARRYFARM_MASTER_PASSWORD）
+账户：6 个；推进已有仓位：否（凭据库没解锁，要解锁请设环境变量 EARNFARM_MASTER_PASSWORD）
 告警通道：log　（只有本地日志通道：手机上收不到任何东西，去 [alerts] 配一个通道）
 节奏：行情 300s／历史 1800s／仓位 500ms
-数据库：C:\Users\YJQ\.carryfarm\carryfarm.db
+数据库：C:\Users\YJQ\.earnfarm\earnfarm.db
 ```
 
 `--status` 的存在是为了分清"没机会"和"进程死了"——这两件事在推送上长得一模一样：
@@ -144,16 +144,16 @@ python run.py --watch -v               # 连 httpx 的每个请求都打出来
   告警通道：log
 ```
 
-主密码只从环境变量读，绝不落配置文件：`CARRYFARM_MASTER_PASSWORD`
-（`CARRYFARM_PASSWORD` 也认，向后兼容）。不给密码就跑"只看不做"模式——
+主密码只从环境变量读，绝不落配置文件：`EARNFARM_MASTER_PASSWORD`
+（`EARNFARM_PASSWORD` 也认，向后兼容）。不给密码就跑"只看不做"模式——
 行情和告警照常，仓位一律不碰。
 
 ---
 
 ## 配置
 
-配置文件 `~/.carryfarm/config.toml`，**不存在也能直接跑**（全默认值，只是没有账户）。
-数据库固定在 `~/.carryfarm/carryfarm.db`。所有可调项都集中在 `carryfarm/config.py`，
+配置文件 `~/.earnfarm/config.toml`，**不存在也能直接跑**（全默认值，只是没有账户）。
+数据库固定在 `~/.earnfarm/earnfarm.db`。所有可调项都集中在 `earnfarm/config.py`，
 没有第二处配置来源。写了不认识的段或键会直接报错，不会被静默忽略。
 
 ```toml
@@ -189,17 +189,31 @@ silence_risk_s = 900
 
 [alerts.wechat]               # PushPlus
 enabled = true
-token_env = "CARRYFARM_PUSHPLUS_TOKEN"
+token_env = "EARNFARM_PUSHPLUS_TOKEN"
 
 [alerts.telegram]
 enabled = true
-bot_token_env = "CARRYFARM_TELEGRAM_BOT_TOKEN"
-chat_id_env = "CARRYFARM_TELEGRAM_CHAT_ID"
+bot_token_env = "EARNFARM_TELEGRAM_BOT_TOKEN"
+chat_id_env = "EARNFARM_TELEGRAM_CHAT_ID"
 
 [alerts.webhook]              # style: raw / feishu / dingtalk / bark
 enabled = true
 style = "feishu"
-url_env = "CARRYFARM_ALERT_WEBHOOK_URL"
+url_env = "EARNFARM_ALERT_WEBHOOK_URL"
+
+[analysis]                    # 操作复盘页（/analysis）
+default_engines = ["claude"]  # 页面默认勾选的引擎，可多选：claude / grok / codex / api
+claude_cmd = "claude"         # Claude Code CLI 的命令名或完整路径
+grok_cmd = "grok"             # Grok CLI，同上
+codex_cmd = "codex"           # OpenAI Codex CLI，同上
+api_url = "https://api.anthropic.com/v1/messages"   # 线上 API 的接口地址
+api_style = "anthropic"       # 报文风格：anthropic / openai（xAI、DeepSeek、中转站都走 openai）
+api_model = "claude-sonnet-5" # 线上 API 用的模型名
+api_key_env = "EARNFARM_AI_API_KEY"   # key 走这个环境变量，绝不写进本文件
+api_max_tokens = 8192         # 线上 API 单次回复的 token 上限
+timeout_s = 600               # 单个引擎的超时；数据多时模型要算一阵，太短会掐死正常分析
+max_fills = 2000              # 嵌入 prompt 的成交上限，超出截最新（汇总统计仍按全量算）
+default_days = 7              # 页面默认回看天数
 ```
 
 几个容易踩的点：
@@ -217,6 +231,62 @@ url_env = "CARRYFARM_ALERT_WEBHOOK_URL"
 任何东西**——自检那行会明说这件事。静默地不发告警比配错更危险。
 
 ---
+
+## 双市场溢价监控（/premium）
+
+同一家公司在两个市场上市、而两地间的股份转换通道受阻时（外汇管制、存托份额
+上限），两条腿之间会出现**持续不归零的溢价**。币安把 SK 海力士的两条腿都做成
+了 USDⓈ-M 永续（`SKHYUSDT` = 纳斯达克 ADR，`SKHYNIXUSDT` = 韩交所普通股，
+10 份 ADR = 1 股），这一页盯的就是这个价差。
+
+**口径必读：页面上所有价格都来自币安永续（fapi 公开端点），不是纳斯达克 /
+韩交所的现货报价。** 溢价是两个永续之间的价差口径——每个永续自带一点基差，
+和"ADR 现货 vs 韩股现货"的真溢价能差 1~2 个百分点。对在币安下单的人来说
+永续口径才是能成交的价格；要算涉及真实股票交割的转换套利，得另拉现货数据。
+
+- **没有自动刷新，一个定时器都没有。** 溢价的锚（两地现货价）一天只各更新
+  一个交易时段，其余时间两个永续都拴在冻结的指数价上，定时重拉换来的只是
+  噪音。打开时拉一次，之后手动点。每次刷新一共 6 个公开请求，无需任何 key，
+  也不占八家全市场刷新的限频配额。
+- **回测曲线默认回看三周，可在页面上改**（3 天 ~ 2 个月；上限受 fapi 单请求
+  1500 根 K 线约束）。上区两条价格线，下区溢价率贴轴放大、虚线为回看期均值。
+- 加新配对改 `earnfarm/premium.py` 的 `DUAL_PAIRS` 一行即可——前提是两条腿
+  都是**同一公司的普通股/ADR**。杠杆 ETF（如 CSOP 2x 系列）进不了这个表：
+  每日再平衡的损耗会让"溢价"永远算不平，那不是溢价是损耗。
+
+## 操作复盘（/analysis）
+
+拉某个标的一段时间的**真实成交记录**（逐笔 fill，含手续费与已实现盈亏），
+本地先用 Decimal 算好汇总统计，再连同持仓/挂单/资金费上下文一起交给
+分析引擎生成 Markdown 复盘报告——时间线、成本、盈亏归因、行为模式、
+改进建议。报告同时存进 `~/.earnfarm/analysis/`。
+
+- **引擎可多选并行，各出一份报告**：本机 Claude Code CLI / 本机 Grok CLI /
+  本机 OpenAI Codex CLI / 线上 API，勾几个跑几个，互相独立、互为对照。
+- **线上 API 支持两种报文风格**：`anthropic`（Messages API）和 `openai`
+  （chat/completions）——xAI、DeepSeek 和各家中转站都兼容 openai 风格。
+  key 走环境变量（`api_key_env` 指向的那个），**绝不进配置文件**。
+- **线上 API 可在页面上选服务商预设**：DeepSeek / xAI / Anthropic / 自定义
+  四选一，URL、报文风格和模型名替你填好。key 直接在页面上填，也可以
+  **加密保存**——与交易所凭据同一个 vault、同一把主密码；页面没填 key 时
+  仍回退环境变量。
+- **单币分析模式（免凭据）**：不填任何交易所凭据也能用——只拉币安公开行情
+  （K 线、24h 快照、标记/指数价、资金费率历史）做单币走势分析，
+  没有成交记录也就没有复盘，只看行情结构。分析任务在**后台**跑，
+  切到别的页面再切回来，进度和报告都不会丢。
+- **标的支持模糊输入**：比如输入"海力士"会解析成 `SKHYUSDT` + `SKHYNIXUSDT`
+  两条腿一起复盘；本地词表认不出的输入，交给选中的第一个引擎对着
+  币安全量符号表去认。
+- **复盘凭据与套利账户同库同加密，但分类隔离**（accounts 表的 kind 字段）：
+  套利连接永远不会碰复盘专用凭据，反之亦然。也可以临时填一组 API——
+  临时凭据只活在这次分析的适配器对象里，不进 vault、不落盘。
+  复盘 key 只需要**读取**权限，不要开交易和提币。
+- **发给引擎子进程的只有成交数据，没有任何密钥材料**；数据走 stdin，
+  不经过命令行参数，也不落临时文件。
+- 分析是显式动作：点一次跑一次，没有定时器。模型不预测行情，报告只基于
+  拉到的数据——数据里没有的它被明确要求不许编。
+- 成交历史目前只有币安（USDⓈ-M 永续，`/fapi/v1/userTrades` 按 7 天窗翻页）
+  实现了；其他交易所选了会明说"尚未实现"，不会假装分析。
 
 ## 它不会做的事
 
@@ -249,13 +319,17 @@ python -m pytest tests/ -q      # 全绿为准，具体条数随功能增长
 
 | 文件 | 干什么 |
 |---|---|
-| `carryfarm/public_feed.py` | 拉八家全市场资金费、配对、算成本 |
-| `carryfarm/scoring.py` | 净年化 / 回本 / 稳定性 / 容量 / 判决 |
-| `carryfarm/history.py` | 历史资金费回填，落 SQLite |
-| `carryfarm/session.py` | 凭据库、账户连接、真实费率档位缓存 |
-| `carryfarm/safety.py` | 裸腿检测、撤退状态机、熔断 |
-| `carryfarm/executor.py` `trader.py` | 分片下单与收敛 |
-| `carryfarm/alerts.py` | 告警：6 类事件 × 4 个通道 + 去重 |
-| `carryfarm/watch.py` | 守护模式：4 条独立监督的循环 |
-| `carryfarm/ui/` | NiceGUI 界面 |
+| `earnfarm/public_feed.py` | 拉八家全市场资金费、配对、算成本 |
+| `earnfarm/scoring.py` | 净年化 / 回本 / 稳定性 / 容量 / 判决 |
+| `earnfarm/history.py` | 历史资金费回填，落 SQLite |
+| `earnfarm/session.py` | 凭据库、账户连接、真实费率档位缓存 |
+| `earnfarm/safety.py` | 裸腿检测、撤退状态机、熔断 |
+| `earnfarm/executor.py` `trader.py` | 分片下单与收敛 |
+| `earnfarm/alerts.py` | 告警：6 类事件 × 4 个通道 + 去重 |
+| `earnfarm/watch.py` | 守护模式：4 条独立监督的循环 |
+| `earnfarm/premium.py` | 双市场溢价：币安双腿永续的快照与对齐序列 |
+| `earnfarm/analysis.py` | 操作复盘：成交拉取归一 + 多引擎（CLI/API）调用 |
+| `earnfarm/ui/premium_page.py` `premium_chart.py` | 溢价监控页 + 服务端 SVG 回测曲线 |
+| `earnfarm/ui/analysis_page.py` | 操作复盘页 |
+| `earnfarm/ui/` | NiceGUI 界面 |
 | `docs/research/` | 八家交易所的接口调研 + 设计文档 |

@@ -17,7 +17,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -25,14 +25,14 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.exchanges.bitget import (
+from earnfarm.exchanges.bitget import (
     DEPTH_PATH,
     BitgetAdapter,
     BitgetSpotAdapter,
     _json_body,
     _query_strings,
 )
-from carryfarm.models import Instrument
+from earnfarm.models import Instrument
 
 API_KEY = "bg_test_key"
 SECRET = "bg_test_secret"
@@ -981,7 +981,7 @@ def test_ws_drops_out_of_order_packets(monkeypatch):
 
 
 def test_ws_batches_subscriptions():
-    from carryfarm.exchanges.bitget import WS_SUB_BATCH, _chunks
+    from earnfarm.exchanges.bitget import WS_SUB_BATCH, _chunks
     symbols = [f"S{i}USDT" for i in range(120)]
     chunks = _chunks(symbols, WS_SUB_BATCH)
     assert [len(c) for c in chunks] == [50, 50, 20]

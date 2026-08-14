@@ -159,4 +159,4 @@ def password_from_env() -> str | None:
     注意这会让密码出现在进程环境里（/proc/<pid>/environ、docker inspect 可见），
     安全性弱于交互输入，仅在你清楚该权衡时使用。
     """
-    return os.environ.get("CARRYFARM_PASSWORD") or None
+    return os.environ.get("EARNFARM_PASSWORD") or None

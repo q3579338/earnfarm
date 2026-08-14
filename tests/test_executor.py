@@ -12,14 +12,14 @@ from decimal import Decimal
 
 import pytest
 
-from carryfarm.executor import (
+from earnfarm.executor import (
     Executor,
     LegSpec,
     PlacedOrder,
     State,
     Unit,
 )
-from carryfarm.safety import BreakerLevel, LegFilters, LegHealth
+from earnfarm.safety import BreakerLevel, LegFilters, LegHealth
 
 FILT = LegFilters(step_size=Decimal("0.001"), min_qty=Decimal("0.001"),
                   min_notional=Decimal("5"), contract_size=Decimal("0.001"))

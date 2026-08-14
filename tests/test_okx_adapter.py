@@ -15,7 +15,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -23,12 +23,12 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.exchanges.okx import OkxAdapter
-from carryfarm.models import MarketKind
+from earnfarm.exchanges.okx import OkxAdapter
+from earnfarm.models import MarketKind
 
-API_KEY = "carryfarm-key"
+API_KEY = "earnfarm-key"
 API_SECRET = "6a3f1c9d2b7e4a5081c3d9f2a7b6e5c4"
-PASSPHRASE = "carryfarm-pass"
+PASSPHRASE = "earnfarm-pass"
 CRED = Credential(api_key=API_KEY, api_secret=API_SECRET, passphrase=PASSPHRASE)
 
 # OKX 官方签名示例用的时间戳，换算成 epoch ms 后钉死本地时钟
@@ -220,18 +220,18 @@ def test_no_broker_tag_leaves_zero_traces():
 def test_broker_tag_goes_into_body_tag_field():
     """非空返佣码：出现在 body 的 tag 字段，且不影响 clOrdId。"""
     ad, rec = build({"/api/v5/trade/order": lambda r: ok([ORDER_ACK])},
-                    broker_code="CARRYFARM01")
+                    broker_code="EARNFARM01")
     call(ad, ad.place_order(limit_order()))
 
     body = httpx_json(rec.last("/api/v5/trade/order"))
-    assert body["tag"] == "CARRYFARM01"
+    assert body["tag"] == "EARNFARM01"
     assert body["clOrdId"] == "arb1a2b3c4d5e6f7"
-    assert not body["clOrdId"].startswith("CARRYFARM01")
+    assert not body["clOrdId"].startswith("EARNFARM01")
 
 
 def test_illegal_broker_tag_rejected_at_construction():
     """带横杠/超长的返佣码在配置期就该炸，别等下单才发现发不出去。"""
-    for bad in ("carry-farm", "carryfarm_01", "A" * 17, "tag with space"):
+    for bad in ("carry-farm", "earnfarm_01", "A" * 17, "tag with space"):
         with pytest.raises(ValueError):
             OkxAdapter(CRED, broker_code=bad)
 
@@ -391,7 +391,7 @@ def test_lot_size_is_the_real_coin_granularity():
     引擎会认为 50 万 PEPE 的缺口可以补 → adapter 里 5e5/1e7=0.05 张 → 按 lotSz
     取整成 0 → 每一拍都抛 OrderRejected("PINCHED")，死循环。
     """
-    from carryfarm.safety import floor_to_step
+    from earnfarm.safety import floor_to_step
 
     ad, rec = build({"/api/v5/trade/order": lambda r: ok([ORDER_ACK])})
 

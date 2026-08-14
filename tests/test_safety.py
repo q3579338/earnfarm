@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import pytest
 
-from carryfarm.safety import (
+from earnfarm.safety import (
     DEFAULT_PARAMS,
     BreakerLevel,
     BreakerSignals,

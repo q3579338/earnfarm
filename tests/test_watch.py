@@ -22,13 +22,13 @@ from decimal import Decimal
 
 import pytest
 
-from carryfarm.config import Config, ConfigError, WatchConfig
-from carryfarm.models import BookDepth, CarryRate, Hedge, HedgeStatus, Leg
-from carryfarm.public_feed import PublicFeed
-from carryfarm.scoring import HistoryStats, LegQuote, ScoredOpportunity, score_pair
-from carryfarm.storage import Storage
-from carryfarm.vault import Vault
-from carryfarm.watch import Watcher, format_status, read_heartbeat
+from earnfarm.config import Config, ConfigError, WatchConfig
+from earnfarm.models import BookDepth, CarryRate, Hedge, HedgeStatus, Leg
+from earnfarm.public_feed import PublicFeed
+from earnfarm.scoring import HistoryStats, LegQuote, ScoredOpportunity, score_pair
+from earnfarm.storage import Storage
+from earnfarm.vault import Vault
+from earnfarm.watch import Watcher, format_status, read_heartbeat
 
 NOW = 1_785_000_000.0
 
@@ -330,7 +330,7 @@ class FakeAdapter:
 def test_one_dead_venue_does_not_empty_the_board(tmp_path):
     """单家挂掉只该少掉它自己的配对，其余五家照常出榜。
     这条要是破了，无人值守时会表现成"最近没什么机会"——最骗人的那种故障。"""
-    from carryfarm.models import Venue
+    from earnfarm.models import Venue
 
     feed = PublicFeed()
     feed._adapters = {
@@ -348,7 +348,7 @@ def test_one_dead_venue_does_not_empty_the_board(tmp_path):
 
 
 def test_venue_failures_are_recorded_and_surfaced(tmp_path):
-    from carryfarm.models import Venue
+    from earnfarm.models import Venue
 
     feed = FakeFeed([make_op()], venues=("binance", "okx"),
                     errors={Venue.HTX: "connection reset"})
@@ -424,7 +424,7 @@ def test_a_stalled_feed_raises_an_alert_once(tmp_path):
 # ---- 5. 优雅退出：先落库再退 ------------------------------------------------
 
 def accounts(storage: Storage) -> tuple[str, str]:
-    from carryfarm.models import Venue
+    from earnfarm.models import Venue
     vault = Vault()
     storage.set_vault_header(vault.initialize("test-password-123"))
     a = storage.add_account(Venue.BINANCE, "long-acct",
@@ -597,7 +597,7 @@ def test_trader_warnings_become_alerts(tmp_path):
 # 两个模块分两轮落地，接线错了单看哪一边的测试都发现不了。
 
 def test_the_real_alert_engine_delivers_and_then_silences(tmp_path):
-    from carryfarm.watch import build_alert_engine
+    from earnfarm.watch import build_alert_engine
 
     config = fast_config(tmp_path)
     storage = Storage(config.db_path)
@@ -620,7 +620,7 @@ def test_the_real_alert_engine_delivers_and_then_silences(tmp_path):
 def test_system_alerts_reach_the_real_engine(tmp_path):
     """守护进程自己的故障告警（行情停更）也得能过真引擎——
     这条路上我构造的是 Alert 对象，字段对不上会在这里炸出来。"""
-    from carryfarm.watch import build_alert_engine
+    from earnfarm.watch import build_alert_engine
 
     now = [NOW]
     config = fast_config(tmp_path)
@@ -649,14 +649,14 @@ def test_market_interval_floor_is_enforced_when_loading_config():
 def test_watch_section_loads_from_config_toml_and_status_cli_runs(tmp_path, capsys):
     """`run.py --watch --status` 这条链路整个走一遍：读 [watch] 段 → 开库 → 打印死活。
     节奏参数要是没接进 config，用户在服务器上就只能改代码了。"""
-    from carryfarm.watch import main
+    from earnfarm.watch import main
 
     cfg = tmp_path / "config.toml"
     cfg.write_text(
         f'data_dir = "{tmp_path.as_posix()}"\n\n'
         "[watch]\nmarket_interval_s = 240.0\nalert_max_per_round = 3\n",
         encoding="utf-8")
-    from carryfarm.config import load as load_config
+    from earnfarm.config import load as load_config
     loaded = load_config(cfg)
     assert loaded.watch.market_interval_s == 240.0
     assert loaded.watch.alert_max_per_round == 3
@@ -677,13 +677,13 @@ def test_history_days_follow_the_holding_period(tmp_path):
 
 
 def test_master_password_accepts_both_env_names(monkeypatch):
-    """vault.password_from_env() 用 CARRYFARM_PASSWORD，守护模式原本只认
-    CARRYFARM_MASTER_PASSWORD。两个名字是两个 agent 分别起的，只认一个的话，
+    """vault.password_from_env() 用 EARNFARM_PASSWORD，守护模式原本只认
+    EARNFARM_MASTER_PASSWORD。两个名字是两个 agent 分别起的，只认一个的话，
     按另一个名字配好的用户会启动一个**静默只读**的守护进程——
     行情在刷、告警在推、就是永远不推进仓位。这是最难发现的一类故障。
     """
-    from carryfarm import watch as watch_mod
-    from carryfarm.vault import password_from_env
+    from earnfarm import watch as watch_mod
+    from earnfarm.vault import password_from_env
 
     monkeypatch.delenv(watch_mod.MASTER_PASSWORD_ENV, raising=False)
     monkeypatch.delenv(watch_mod.LEGACY_PASSWORD_ENV, raising=False)

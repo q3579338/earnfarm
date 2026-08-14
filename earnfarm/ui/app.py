@@ -35,7 +35,10 @@ from ..trader import Trader
 from . import theme
 from .accounts import VENUE_LABELS, AccountsPanel
 from .hedges import HedgesPanel, open_create_dialog
+from .nav import module_nav
 from .opportunities import OpportunityBoard
+from .analysis_page import build_analysis_page
+from .premium_page import build_premium_page
 
 # 隔多久重新补一次增量历史。行情 60 秒刷一次，但历史一天才结算 1~24 次，
 # 跟着行情一起刷等于拿几十倍的请求换零信息量。
@@ -98,7 +101,9 @@ class AppState:
         # 两轮刷新之间的最小间隔。一轮实测约 105 秒（六家全市场费率 + 逐对深度），
         # 留出富余免得把交易所的限频配额全花在自己身上。
         # 用户可以在机会榜上改，改完存库；这里读的是上次存的值
-        self.auto_refresh: bool = True
+        # 默认关：行情重拉是显式动作的哲学贯穿全站（溢价页、复盘页都无定时器）。
+        # 用户开过一次就存进 meta，之后跟随用户的选择
+        self.auto_refresh: bool = False
         self.min_refresh_gap_s: float = float(DEFAULT_REFRESH_INTERVAL_S)
         # 勾选的交易所。默认全家；这是**数据源**选择不是过滤器——
         # 改选要重拉行情（少拉的家连请求都不发，限频配额跟着省下来）。
@@ -476,9 +481,7 @@ def build(config: Config, offline: bool = False,
     with ui.header().classes("items-center justify-between px-4 py-2") \
             .style("background:#ffffff; color:#18181b; "
                    "border-bottom:1px solid #e4e4e7; box-shadow:none"):
-        with ui.row().classes("items-center gap-3"):
-            ui.label("carryfarm").classes("text-lg font-bold cf-mono")
-            ui.label("跨所资金费套利").classes("text-xs").style(f"color:{theme.NEUTRAL}")
+        module_nav("ops")
         with ui.row().classes("items-center gap-2"):
             if offline:
                 ui.badge("离线演示数据").props("color=orange")
@@ -738,7 +741,7 @@ def _settings_panel(config: Config) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="carryfarm 跨所资金费套利工具")
+    parser = argparse.ArgumentParser(description="earnfarm 跨所资金费套利工具")
     parser.add_argument("--offline", action="store_true",
                         help="用离线演示数据，不联网")
     parser.add_argument("--port", type=int, default=None)
@@ -756,7 +759,23 @@ def main(argv: list[str] | None = None) -> None:
     def index() -> None:
         build(config, offline=args.offline, state=state)
 
-    ui.run(host=config.server.host, port=port, title="carryfarm",
+    @ui.page("/premium")
+    def premium() -> None:
+        # 溢价页不接 offline 开关：它只发 6 个公开请求，没有演示数据的必要；
+        # 断网时页面会把失败原因写在状态栏里，比一份假数据诚实
+        build_premium_page()
+
+    @ui.page("/analysis")
+    def analysis() -> None:
+        # 复用共享的 session：已存账户走 vault 解锁态，临时凭据不碰 vault
+        build_analysis_page(state.session, config, page_mode="ops")
+
+    @ui.page("/market")
+    def market() -> None:
+        # 单币分析：公开行情免凭据；与复盘页共用引擎、后台任务和历史报告
+        build_analysis_page(state.session, config, page_mode="market")
+
+    ui.run(host=config.server.host, port=port, title="earnfarm",
            reload=False, show=False, dark=False)
 
 

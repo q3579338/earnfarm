@@ -19,7 +19,7 @@ from typing import Iterator, Sequence
 from .models import Hedge, HedgeStatus, Leg, Venue
 from .vault import Vault, VaultHeader
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     alias      TEXT NOT NULL,
     credential BLOB NOT NULL,          -- AES-GCM 密文，明文永不落盘
     disabled   INTEGER NOT NULL DEFAULT 0,
+    kind       TEXT NOT NULL DEFAULT 'trade',   -- trade=套利账户 / analysis=复盘专用
     created_at INTEGER NOT NULL,
     UNIQUE (venue, alias)
 );
@@ -117,6 +118,7 @@ class AccountRow:
     alias: str
     credential: bytes
     disabled: bool
+    kind: str = "trade"      # trade=套利账户 / analysis=复盘专用（不参与套利连接）
 
 
 def _dec(value: str) -> Decimal:
@@ -165,6 +167,20 @@ class Storage:
             raise StorageError(
                 f"数据库 schema 版本 {found} 高于本程序支持的 {SCHEMA_VERSION}，请升级程序"
             )
+        if found < SCHEMA_VERSION:
+            self._migrate(found)
+            self._conn.execute(
+                "UPDATE meta SET value=? WHERE key='schema_version'",
+                (str(SCHEMA_VERSION).encode(),),
+            )
+
+    def _migrate(self, found: int) -> None:
+        """老库就地升级。CREATE IF NOT EXISTS 不会给已有表补列，必须显式 ALTER。"""
+        if found < 2:
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(accounts)")}
+            if "kind" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'trade'")
 
     def set_meta(self, key: str, value: str) -> None:
         """通用 meta 写入。守护模式的心跳走这里：一行、覆盖写、不进 events 表。
@@ -201,28 +217,36 @@ class Storage:
     # ---- accounts -------------------------------------------------------
 
     def add_account(self, venue: Venue, alias: str, credential: dict, vault: Vault,
-                    now_ms: int) -> str:
+                    now_ms: int, kind: str = "trade") -> str:
+        if kind not in ("trade", "analysis"):
+            raise StorageError(f"未知账户类别: {kind!r}")
         account_id = uuid.uuid4().hex
         # aad 绑定账户ID，防止密文被挪到另一个账户行上冒用
         blob = vault.seal(credential, aad=account_id.encode())
         try:
             self._conn.execute(
-                "INSERT INTO accounts(id, venue, alias, credential, disabled, created_at) "
-                "VALUES(?,?,?,?,0,?)",
-                (account_id, venue.value, alias, blob, now_ms),
+                "INSERT INTO accounts(id, venue, alias, credential, disabled, kind, created_at) "
+                "VALUES(?,?,?,?,0,?,?)",
+                (account_id, venue.value, alias, blob, kind, now_ms),
             )
         except sqlite3.IntegrityError as exc:
             raise StorageError(f"{venue.value} 下已存在别名为 {alias!r} 的账户") from exc
         return account_id
 
-    def list_accounts(self) -> list[AccountRow]:
-        rows = self._conn.execute(
-            "SELECT id, venue, alias, credential, disabled FROM accounts ORDER BY venue, alias"
-        ).fetchall()
+    def list_accounts(self, kind: str | None = "trade") -> list[AccountRow]:
+        """默认只列套利账户——connect_all / 账户页的既有语义不变。
+        复盘页传 kind="analysis"；换主密码重加密传 None 取全量，漏一类等于毁一类。"""
+        sql = "SELECT id, venue, alias, credential, disabled, kind FROM accounts"
+        params: tuple = ()
+        if kind is not None:
+            sql += " WHERE kind=?"
+            params = (kind,)
+        rows = self._conn.execute(sql + " ORDER BY venue, alias", params).fetchall()
         return [
             AccountRow(
                 id=r["id"], venue=Venue(r["venue"]), alias=r["alias"],
                 credential=bytes(r["credential"]), disabled=bool(r["disabled"]),
+                kind=r["kind"],
             )
             for r in rows
         ]
@@ -239,9 +263,49 @@ class Storage:
             raise StorageError("该账户仍被对冲仓位引用，请先删除相关对冲")
         self._conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
 
+    def reset_vault(self) -> None:
+        """忘记主密码时的重置：删掉全部已存凭据、加密小密钥和验证头，
+        回到"未设置"状态。
+
+        密文没有主密码就是永远解不开的随机字节，留着只会让人误以为还能找回；
+        行情历史、事件等其他数据一概不动。有对冲记录引用账户时拒绝执行——
+        那些记录的意义依赖账户行存在，静默删掉会让历史对不上账。
+        """
+        used = self._conn.execute("SELECT 1 FROM hedges LIMIT 1").fetchone()
+        if used:
+            raise StorageError("存在对冲记录，重置会让历史对不上账。请先在界面上删除全部对冲。")
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM accounts")
+            conn.execute("DELETE FROM meta WHERE key='vault_header'")
+            conn.execute("DELETE FROM meta WHERE key LIKE 'secret:%'")
+
+    # ---- 加密小密钥（AI API key 这类不属于交易所账户的秘密）--------------
+
+    def save_secret(self, name: str, payload: dict, vault: Vault) -> None:
+        """与账户凭据同一把主密码加密。aad 绑定名字，防止密文换位冒用。"""
+        blob = vault.seal(payload, aad=f"secret:{name}".encode())
+        self._conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (f"secret:{name}", blob),
+        )
+
+    def load_secret(self, name: str, vault: Vault) -> dict | None:
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key=?", (f"secret:{name}",)).fetchone()
+        if row is None:
+            return None
+        return vault.open(bytes(row["value"]), aad=f"secret:{name}".encode())
+
+    def list_secret_names(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT key FROM meta WHERE key LIKE 'secret:%'").fetchall()
+        return [r["key"][len("secret:"):] for r in rows]
+
     def rotate_password(self, vault: Vault, new_password: str) -> None:
-        """换主密码：解开所有凭据重新加密，与新验证头一起原子写回。"""
-        rows = self.list_accounts()
+        """换主密码：解开所有凭据重新加密，与新验证头一起原子写回。
+        必须取全量（kind=None）——漏掉分析类凭据会让它们在换密码后永远解不开。"""
+        rows = self.list_accounts(kind=None)
         blobs = {r.id: r.credential for r in rows}
         aads = {r.id: r.id.encode() for r in rows}
         header, resealed = vault.rotate(new_password, blobs, aads)

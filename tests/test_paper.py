@@ -16,9 +16,9 @@ from decimal import Decimal
 
 import pytest
 
-from carryfarm.executor import Executor, LegSpec, State, Unit
-from carryfarm.paper import DepthProfile, PaperError, PaperGateway
-from carryfarm.safety import LegFilters, LegHealth
+from earnfarm.executor import Executor, LegSpec, State, Unit
+from earnfarm.paper import DepthProfile, PaperError, PaperGateway
+from earnfarm.safety import LegFilters, LegHealth
 
 FILT = LegFilters(step_size=Decimal("0.001"), min_qty=Decimal("0.001"),
                   min_notional=Decimal("5"), contract_size=Decimal("0.001"))
@@ -394,7 +394,7 @@ def test_set_leg_health_drives_repair_verdict_inputs():
 
 def test_real_adapter_feeds_the_book():
     """盘口从真实适配器拉，只有成交是模拟的。"""
-    from carryfarm.models import BookTop
+    from earnfarm.models import BookTop
 
     class StubAdapter:
         def __init__(self):
@@ -460,7 +460,7 @@ def test_satisfies_order_gateway_protocol():
     """结构上必须能直接顶替真实网关塞进 Executor。"""
     import inspect
 
-    from carryfarm.executor import OrderGateway
+    from earnfarm.executor import OrderGateway
 
     gw = make_gw()
     for name in ("place", "resolve_unknown", "position_qty", "book", "leg_health"):

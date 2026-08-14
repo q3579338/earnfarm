@@ -8,8 +8,17 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CONFIG_PATH = Path.home() / ".carryfarm" / "config.toml"
-DEFAULT_DATA_DIR = Path.home() / ".carryfarm"
+# 改名兼容：项目原名 carryfarm，老用户的库（vault/资金费历史）都在 ~/.carryfarm。
+# 新目录不存在而老目录存在时继续用老的——改名绝不能把人的账户"改丢"。
+# 迁移数据（把目录改名成 ~/.earnfarm）留给用户显式去做，程序不自作主张搬库。
+_LEGACY_DATA_DIR = Path.home() / ".carryfarm"
+_PREFERRED_DATA_DIR = Path.home() / ".earnfarm"
+DEFAULT_DATA_DIR = (
+    _LEGACY_DATA_DIR
+    if _LEGACY_DATA_DIR.exists() and not _PREFERRED_DATA_DIR.exists()
+    else _PREFERRED_DATA_DIR
+)
+DEFAULT_CONFIG_PATH = DEFAULT_DATA_DIR / "config.toml"
 
 
 class ConfigError(Exception):
@@ -119,7 +128,7 @@ class WeChatAlertConfig:
 
     enabled: bool = False
     token: str = ""
-    token_env: str = "CARRYFARM_PUSHPLUS_TOKEN"
+    token_env: str = "EARNFARM_PUSHPLUS_TOKEN"
     topic: str = ""            # 群组编码，留空 = 只推给自己
     url: str = "https://www.pushplus.plus/send"
 
@@ -132,9 +141,9 @@ class TelegramAlertConfig:
 
     enabled: bool = False
     bot_token: str = ""
-    bot_token_env: str = "CARRYFARM_TELEGRAM_BOT_TOKEN"
+    bot_token_env: str = "EARNFARM_TELEGRAM_BOT_TOKEN"
     chat_id: str = ""
-    chat_id_env: str = "CARRYFARM_TELEGRAM_CHAT_ID"
+    chat_id_env: str = "EARNFARM_TELEGRAM_CHAT_ID"
     api_base: str = "https://api.telegram.org"
 
 
@@ -148,11 +157,11 @@ class WebhookAlertConfig:
 
     enabled: bool = False
     url: str = ""
-    url_env: str = "CARRYFARM_ALERT_WEBHOOK_URL"
+    url_env: str = "EARNFARM_ALERT_WEBHOOK_URL"
     style: str = "raw"
     # 需要鉴权时填头名，值一律走环境变量——不落文件
     auth_header: str = ""
-    auth_value_env: str = "CARRYFARM_ALERT_WEBHOOK_TOKEN"
+    auth_value_env: str = "EARNFARM_ALERT_WEBHOOK_TOKEN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +269,51 @@ class WatchConfig:
             raise ConfigError("watch.history_interval_s 必须为正")
 
 
+# 复盘可用的分析引擎。CLI 三个是本机装的编码助手（headless 调用），
+# api 是任意线上大模型接口（anthropic 或 openai 两种报文风格）
+ANALYSIS_ENGINES = ("claude", "grok", "codex", "api")
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisConfig:
+    """操作复盘分析（/analysis 页）。引擎可多选并行，各出一份报告。"""
+
+    # 页面默认勾选的引擎
+    default_engines: tuple[str, ...] = ("claude",)
+    # 三个本机 CLI 的命令名或完整路径。装在非常规位置时写绝对路径
+    claude_cmd: str = "claude"
+    grok_cmd: str = "grok"
+    codex_cmd: str = "codex"
+    # 线上 API：风格 anthropic（Messages API）或 openai（chat/completions，
+    # xAI / DeepSeek / 各家中转站都兼容后者）。key 走环境变量，绝不写字面量
+    api_url: str = "https://api.anthropic.com/v1/messages"
+    api_style: str = "anthropic"
+    api_model: str = "claude-sonnet-5"
+    api_key_env: str = "EARNFARM_AI_API_KEY"
+    api_max_tokens: int = 8192
+    # 单个引擎的超时。数据多时模型要算一阵，太短会把正常分析掐死
+    timeout_s: int = 600
+    # 嵌入 prompt 的成交上限。超出只截最新——汇总统计仍按全量算
+    max_fills: int = 2000
+    # 分析页默认回看天数
+    default_days: int = 7
+
+    def validate(self) -> None:
+        for e in self.default_engines:
+            if e not in ANALYSIS_ENGINES:
+                raise ConfigError(
+                    f"analysis.default_engines 含未知引擎 {e!r}，"
+                    f"可选：{', '.join(ANALYSIS_ENGINES)}")
+        if self.api_style not in ("anthropic", "openai"):
+            raise ConfigError("analysis.api_style 必须是 anthropic 或 openai")
+        if self.timeout_s <= 0:
+            raise ConfigError("analysis.timeout_s 必须为正")
+        if self.max_fills <= 0:
+            raise ConfigError("analysis.max_fills 必须为正")
+        if self.default_days <= 0:
+            raise ConfigError("analysis.default_days 必须为正")
+
+
 @dataclass(frozen=True, slots=True)
 class ServerConfig:
     """Web 面板。默认只监听回环地址——不像原版官方命令那样直接把面板挂到公网。"""
@@ -294,15 +348,21 @@ class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     watch: WatchConfig = field(default_factory=WatchConfig)
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
 
     @property
     def db_path(self) -> Path:
-        return self.data_dir / "carryfarm.db"
+        # 改名兼容：目录里已有老名字的库就继续用它，绝不并排新建一个空库
+        legacy = self.data_dir / "carryfarm.db"
+        if legacy.exists():
+            return legacy
+        return self.data_dir / "earnfarm.db"
 
     def validate(self) -> None:
         self.server.validate()
         self.alerts.validate()
         self.watch.validate()
+        self.analysis.validate()
         if self.safety.leverage_mode not in ("conservative", "max"):
             raise ConfigError(
                 f"safety.leverage_mode 必须是 conservative 或 max，当前是 {self.safety.leverage_mode!r}"
@@ -366,6 +426,7 @@ def load(path: Path | None = None) -> Config:
             "server": ServerConfig,
             "alerts": AlertsConfig,
             "watch": WatchConfig,
+            "analysis": AnalysisConfig,
         }
         updates: dict[str, Any] = {}
         for name, klass in sections.items():

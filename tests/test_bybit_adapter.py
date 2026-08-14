@@ -19,7 +19,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from carryfarm.exchanges.base import (
+from earnfarm.exchanges.base import (
     Credential,
     ExchangeError,
     OrderRejected,
@@ -27,13 +27,13 @@ from carryfarm.exchanges.base import (
     OrderUnknown,
     RateLimited,
 )
-from carryfarm.exchanges.bybit import (
+from earnfarm.exchanges.bybit import (
     _DEPTH_LIMIT,
     BybitAdapter,
     _chunk_topics,
     _merge_ticker,
 )
-from carryfarm.models import MarketKind
+from earnfarm.models import MarketKind
 
 API_KEY = "XXXXXXXXXX"
 API_SECRET = "YYYYYYYYYYYYYYYYYYYY"

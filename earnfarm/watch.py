@@ -58,7 +58,7 @@ from .public_feed import (
 from .scoring import ScoredOpportunity
 from .storage import Storage
 
-LOG = logging.getLogger("carryfarm.watch")
+LOG = logging.getLogger("earnfarm.watch")
 
 # 心跳存 meta 表：覆盖写、不进 events。
 # 心跳要是写成事件，60 秒一条、一天 1440 行，真正该看的告警会被冲到几百行以外。
@@ -66,11 +66,11 @@ HEARTBEAT_KEY = "watch:heartbeat"
 
 # 主密码只从环境变量读，绝不落配置文件、绝不硬编码。
 # 没给就跑「只看不做」模式：行情和告警照常，仓位一律不碰。
-MASTER_PASSWORD_ENV = "CARRYFARM_MASTER_PASSWORD"
+MASTER_PASSWORD_ENV = "EARNFARM_MASTER_PASSWORD"
 # vault.password_from_env() 用的是这个名字，而它的存在理由恰好就是无人值守部署。
 # 两个名字必须都认：只认一个的话，按另一个名字配好的用户会启动一个
 # **静默只读**的守护进程——它一切正常、只是永远不推进仓位，而这是最难发现的故障。
-LEGACY_PASSWORD_ENV = "CARRYFARM_PASSWORD"
+LEGACY_PASSWORD_ENV = "EARNFARM_PASSWORD"
 
 
 def _master_password() -> tuple[str, str]:
@@ -1033,7 +1033,7 @@ def _ago(seconds: float) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="run.py --watch",
-        description="carryfarm 守护模式：无界面，7×24 跑，有机会才通知")
+        description="earnfarm 守护模式：无界面，7×24 跑，有机会才通知")
     parser.add_argument("--config", type=Path, default=None, help="配置文件路径")
     parser.add_argument("--status", action="store_true",
                         help="打印心跳后退出——用来分清「没机会」和「进程死了」")

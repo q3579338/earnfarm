@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from carryfarm.executor import State
-from carryfarm.paper import PaperGateway
-from carryfarm.scoring import HistoryStats, LegQuote, score_pair
-from carryfarm.models import Venue
-from carryfarm.storage import Storage
-from carryfarm.vault import Vault
-from carryfarm.trader import Trader
+from earnfarm.executor import State
+from earnfarm.paper import PaperGateway
+from earnfarm.scoring import HistoryStats, LegQuote, score_pair
+from earnfarm.models import Venue
+from earnfarm.storage import Storage
+from earnfarm.vault import Vault
+from earnfarm.trader import Trader
 
 NOW = 1_785_000_000.0
 
@@ -95,7 +95,7 @@ def test_rejects_zero_capacity_opportunity(tmp_path):
 
 def test_rejects_illegal_pairing(tmp_path):
     """同所现货+全仓杠杆共用钱包，不能互为两腿——建仓时就该拦下。"""
-    from carryfarm.models import PairingError
+    from earnfarm.models import PairingError
     trader, gw, storage, _, acc_l, acc_s = make_trader(tmp_path)
     bad = make_op(long_market="binance:spot", short_market="binance:margin")
     with pytest.raises(PairingError):
@@ -155,7 +155,7 @@ def test_breaker_blocks_new_slices(tmp_path):
                                         notional=5_000)
     trader.update_signals(equity_drop_15m=0.05)     # 权益骤降 → 硬熔断
     run(trader.step_all())
-    from carryfarm.safety import BreakerLevel
+    from earnfarm.safety import BreakerLevel
     assert trader.breaker_level is BreakerLevel.HARD
     for u in rt.units:
         assert u.state is not State.LEG1_PENDING

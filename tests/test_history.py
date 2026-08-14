@@ -14,8 +14,8 @@ from decimal import Decimal
 
 import pytest
 
-from carryfarm.exchanges.base import ExchangeError, RateLimited
-from carryfarm.history import (
+from earnfarm.exchanges.base import ExchangeError, RateLimited
+from earnfarm.history import (
     DAY_MS,
     HOUR_MS,
     HistoryBackfiller,
@@ -25,9 +25,9 @@ from carryfarm.history import (
     venue_limit,
     _with_intervals,
 )
-from carryfarm.models import Venue
-from carryfarm.scoring import stability
-from carryfarm.storage import Storage
+from earnfarm.models import Venue
+from earnfarm.scoring import stability
+from earnfarm.storage import Storage
 
 # 对齐到整 8 小时的一个"现在"，省得测试里出现半小时的边界
 NOW_MS = 1_785_000_000_000 // (8 * HOUR_MS) * (8 * HOUR_MS)

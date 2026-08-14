@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import time
 
-from carryfarm.scoring import (
+from earnfarm.scoring import (
     HistoryStats,
     LegQuote,
     breakeven_hours,
