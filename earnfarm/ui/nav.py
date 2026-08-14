@@ -24,9 +24,24 @@ MODULES: tuple[tuple[str, str, str], ...] = (
 
 
 def module_nav(active: str) -> None:
-    """品牌名 + 模块切换。放在 ui.header 的左侧行里调用。"""
+    """品牌名 + 运行模式徽标 + 模块切换。放在 ui.header 的左侧行里调用。
+
+    模式徽标的判据就是登录闸：设了 EARNFARM_WEB_PASSWORD = 在线模式
+    （公网部署，整站先过 /login），没设 = 本地模式。应用躲在反代后面时
+    自己看不见"是否暴露在公网"，登录闸开关是唯一可靠的信号。
+    """
+    from .access import gate_enabled
+
     with ui.row().classes("items-center gap-3"):
         ui.label("earnfarm").classes("text-lg font-bold cf-mono")
+        if gate_enabled():
+            ui.badge("在线").props("color=green") \
+                .tooltip("在线模式：整站登录闸已启用（EARNFARM_WEB_PASSWORD）。"
+                         "适合公网部署。")
+        else:
+            ui.badge("本地").props("color=grey") \
+                .tooltip("本地模式：无登录闸，仅供本机使用。"
+                         "挂公网前必须设置 EARNFARM_WEB_PASSWORD。")
         for key, label, route in MODULES:
             if key == active:
                 ui.label(label).classes("text-sm font-bold") \
