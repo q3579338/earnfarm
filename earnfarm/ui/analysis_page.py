@@ -50,7 +50,7 @@ from ..models import Venue
 from ..session import CREDENTIAL_FIELDS, FIELD_LABELS, VENUE_FIELD_LABELS, Session
 from ..vault import BadPassword, VaultLocked
 from . import binance_client, browser_creds, theme
-from .access import gate_enabled
+from .access import hosted_mode
 from .accounts import VENUE_LABELS
 from .nav import module_nav
 
@@ -93,8 +93,8 @@ _jobs: dict[tuple[str, str], _Job] = {}
 
 
 def _visitor_id() -> str:
-    """访客标识。本地单人模式恒为 local；线上模式用浏览器 id（cookie 里的随机串）。"""
-    if not gate_enabled():
+    """访客标识。本地单人模式恒为 local；多人模式用浏览器 id（cookie 里的随机串）。"""
+    if not hosted_mode():
         return "local"
     try:
         return str(app.storage.browser.get("id", "anon"))[:16] or "anon"
@@ -270,7 +270,7 @@ def build_analysis_page(session: Session, config: Config,
     ui.add_head_html(f"<style>{theme.GLOBAL_CSS}</style>")
     ui.dark_mode(False)
     # 线上模式（多人共用）：凭据一律存访客自己的浏览器，服务器不托管任何人的密钥
-    online = gate_enabled()
+    online = hosted_mode()
     if online:
         browser_creds.install()
         binance_client.install(os.environ.get("EARNFARM_FAPI_BASE", ""))

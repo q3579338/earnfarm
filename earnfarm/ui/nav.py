@@ -30,18 +30,19 @@ def module_nav(active: str) -> None:
     （公网部署，整站先过 /login），没设 = 本地模式。应用躲在反代后面时
     自己看不见"是否暴露在公网"，登录闸开关是唯一可靠的信号。
     """
-    from .access import gate_enabled
+    from .access import gate_enabled, hosted_mode
 
     with ui.row().classes("items-center gap-3"):
         ui.label("earnfarm").classes("text-lg font-bold cf-mono")
-        if gate_enabled():
-            ui.badge("在线").props("color=green") \
-                .tooltip("在线模式：整站登录闸已启用（EARNFARM_WEB_PASSWORD）。"
-                         "适合公网部署。")
+        if hosted_mode():
+            ui.badge("公开版").props("color=green") \
+                .tooltip("多人共用模式：交易所数据由你的浏览器直连拉取、"
+                         "密钥加密存在你自己的设备上，服务器不托管任何人的密钥。")
+        elif gate_enabled():
+            ui.badge("在线").props("color=blue")
         else:
             ui.badge("本地").props("color=grey") \
-                .tooltip("本地模式：无登录闸，仅供本机使用。"
-                         "挂公网前必须设置 EARNFARM_WEB_PASSWORD。")
+                .tooltip("本地模式：数据与凭据都在本机，仅供自己使用。")
         for key, label, route in MODULES:
             if key == active:
                 ui.label(label).classes("text-sm font-bold") \

@@ -55,11 +55,27 @@ _fail_count = 0
 _UNRESTRICTED = {"/login", "/setup"}
 
 
+HOSTED_ENV = "EARNFARM_HOSTED"
+
+
 def gate_enabled() -> bool:
-    """登录闸是否启用（= 在线模式）。"""
+    """登录闸是否启用。与 hosted_mode 相互独立——多人共用模式下站点上
+    没有任何"服务器保管的秘密"，本来就不需要密码墙。"""
     if os.environ.get(WEB_PASSWORD_ENV, "").strip():
         return True
     return os.environ.get(WEB_AUTH_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def hosted_mode() -> bool:
+    """多人共用模式（给别人用的公开部署）。它决定三件事：
+
+    - 交易所数据由**访客浏览器**直连拉取、签名也在他本机算（服务器可能被
+      交易所地域封锁，且不该经手别人的密钥）；
+    - 访客凭据加密存在他自己的浏览器里，服务器不托管；
+    - 服务器 vault / 账户管理 / 对冲仓位 / 下单一律隐藏——那是本地单人功能，
+      公开部署里它们既危险又无意义。
+    """
+    return os.environ.get(HOSTED_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 # ---- 密码存储 ------------------------------------------------------------

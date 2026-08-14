@@ -490,11 +490,20 @@ def build(config: Config, offline: bool = False,
                     .style(f"color:{theme.NEUTRAL}; border:1px solid {theme.NEUTRAL}") \
                     .tooltip("要启用请在 config.toml 的 [broker] 段填入自己申请到的码。")
 
+    # 多人共用模式下藏掉「对冲仓位」「账户」：它们操作的是**服务器上那一份**
+    # vault 和仓位，公开部署里等于把主人的账户交给每个访客。机会榜是只读行情，
+    # 人人可看；真要交易请用本地那份。
+    from .access import hosted_mode
+    _hosted = hosted_mode()
+
     with ui.tabs().classes("w-full") as tabs:
         tab_ops = ui.tab("机会榜")
         tab_hedges = ui.tab("对冲仓位")
         tab_accounts = ui.tab("账户")
         tab_settings = ui.tab("设置")
+        if _hosted:
+            tab_hedges.set_visibility(False)
+            tab_accounts.set_visibility(False)
 
     with ui.tab_panels(tabs, value=tab_ops).classes("w-full cf-dense"):
         with ui.tab_panel(tab_ops):
