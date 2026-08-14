@@ -780,7 +780,7 @@ def main(argv: list[str] | None = None) -> None:
     # 没有这道闸，你解锁的 vault 对任何访客都是解锁的
     from .access import gate_enabled, install_gate, storage_secret
     if gate_enabled():
-        install_gate()
+        install_gate(config.data_dir)
 
     ui.run(host=config.server.host, port=port, title="earnfarm",
            reload=False, show=False, dark=False,
