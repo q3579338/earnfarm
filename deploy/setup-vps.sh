@@ -78,18 +78,34 @@ EOF
 systemctl daemon-reload
 systemctl enable --now earnfarm
 
-echo "==> Caddy 反代 + 自动 HTTPS"
-cat > /etc/caddy/Caddyfile <<EOF
-${DOMAIN} {
+echo "==> Caddy 反代"
+# PROXIED=1（默认）：域名在 Cloudflare 走橙云代理，HTTPS 由 Cloudflare 边缘
+#   终结，源站只提供 HTTP——Caddy 的自动签证书在橙云后面会被挡住。
+#   要求 Cloudflare SSL 模式为 Flexible（或给源站装 Origin 证书后自行改配置）。
+# PROXIED=0：灰云直连，Caddy 自动签 Let's Encrypt。
+# 配置**追加**成独立站点文件，绝不覆盖本机已有站点（如 faucet）。
+PROXIED="${PROXIED:-1}"
+mkdir -p /etc/caddy/sites
+grep -q "^import sites/\*" /etc/caddy/Caddyfile 2>/dev/null \
+    || printf '\nimport sites/*.caddy\n' >> /etc/caddy/Caddyfile
+
+if [ "$PROXIED" = "1" ]; then
+    SITE="http://${DOMAIN}"
+else
+    SITE="${DOMAIN}"
+fi
+cat > /etc/caddy/sites/earnfarm.caddy <<EOF
+${SITE} {
     reverse_proxy 127.0.0.1:8777
 }
 EOF
-systemctl reload caddy
+systemctl reload caddy || systemctl restart caddy
 
 echo
 echo "完成。检查："
 echo "  systemctl status earnfarm --no-pager | head -5"
 echo "  curl -sI https://${DOMAIN} | head -3"
 echo
-echo "前提：Cloudflare 里 ${DOMAIN} 的 A 记录已指向本机公网 IP，"
-echo "且代理状态为「仅 DNS」（灰云）——Caddy 需要直连来签发证书。"
+echo "注意：若本机 80/443 已被 nginx 等其他服务占用，Caddy 会起不来——"
+echo "此时不要装第二个反代，把 earnfarm 的 server 块加进现有反代即可"
+echo "（proxy_pass http://127.0.0.1:8777，配置见仓库 deploy/ 目录说明）。"
