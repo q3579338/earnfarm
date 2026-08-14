@@ -11,9 +11,10 @@
 - ``EARNFARM_WEB_PASSWORD=xxx`` → 在线模式且密码由运维固定（基础设施化管理，
   也是忘记密码时的应急通道，优先级最高）。
 
-首次设置为什么要一次性令牌：服务一旦挂上公网，"谁先访问谁设密码"就是
-抢注漏洞——爬虫比你先到一步，站点就归它了。令牌在服务启动时生成、写进
-数据目录并打印到日志（journalctl -u earnfarm 可见），设完密码即作废。
+首次设置为什么有时间窗：服务一旦挂上公网，"谁先访问谁设密码"就是抢注
+漏洞——爬虫比你先到一步，站点就归它了。这里不让用户去日志里抄令牌，
+改成**重启后 15 分钟内**才允许设置：重启是只有服务器管理者能做的动作，
+等于把"证明你是主人"这件事从抄码变成了重启。窗口过期就再重启一次。
 
 这里不是多用户系统，是单人自托管的门锁：一个密码、失败退避，仅此而已。
 """
@@ -25,6 +26,7 @@ import hashlib
 import json
 import os
 import secrets
+import time
 from pathlib import Path
 
 from fastapi import Request
@@ -66,8 +68,29 @@ def _password_path(data_dir: Path) -> Path:
     return data_dir / "web_password.json"
 
 
-def _token_path(data_dir: Path) -> Path:
-    return data_dir / "setup_token"
+# 首次设置窗口：进程启动时刻 + SETUP_WINDOW_S。设 0 = 永不过期（本地/内网用）
+SETUP_WINDOW_ENV = "EARNFARM_SETUP_WINDOW_S"
+_DEFAULT_SETUP_WINDOW_S = 900
+_started_at = time.monotonic()
+
+
+def setup_window_s() -> int:
+    raw = os.environ.get(SETUP_WINDOW_ENV, "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return _DEFAULT_SETUP_WINDOW_S
+
+
+def setup_open() -> bool:
+    """首次设置窗口是否还开着。0 = 不限时。"""
+    window = setup_window_s()
+    if window <= 0:
+        return True
+    return time.monotonic() - _started_at < window
+
+
+def setup_left_s() -> int:
+    return max(0, int(setup_window_s() - (time.monotonic() - _started_at)))
 
 
 def password_configured(data_dir: Path) -> bool:
@@ -97,8 +120,6 @@ def set_password(data_dir: Path, password: str) -> None:
         path.chmod(0o600)
     except OSError:
         pass          # Windows 上不支持，不影响功能
-    # 令牌是一次性的：密码设完立刻作废，防止被重复用来改密码
-    _token_path(data_dir).unlink(missing_ok=True)
 
 
 def verify_password(data_dir: Path, password: str) -> bool:
@@ -115,21 +136,6 @@ def verify_password(data_dir: Path, password: str) -> bool:
     except (ValueError, KeyError, OSError):
         return False
     return secrets.compare_digest(_derive(password, salt), expected)
-
-
-def setup_token(data_dir: Path) -> str:
-    """首次设置令牌。存在就复用，不存在就生成——重启不会让已发出的令牌失效。"""
-    path = _token_path(data_dir)
-    if path.exists():
-        return path.read_text(encoding="utf-8").strip()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    token = secrets.token_urlsafe(9)
-    path.write_text(token, encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-    return token
 
 
 def storage_secret(data_dir: Path) -> str:
@@ -170,11 +176,9 @@ def install_gate(data_dir: Path) -> None:
     app.add_middleware(_AuthMiddleware, data_dir=data_dir)
 
     if not password_configured(data_dir):
-        token = setup_token(data_dir)
-        # 打印到 stdout：systemd 会收进 journal，运维用
-        # `journalctl -u earnfarm | grep 首次设置` 就能取到
-        print(f"[earnfarm] 尚未设置网页访问密码。首次设置令牌（一次性）：{token}", flush=True)
-        print(f"[earnfarm] 打开 /setup 输入该令牌即可设定自己的密码。", flush=True)
+        w = setup_window_s()
+        print(f"[earnfarm] 尚未设置网页访问密码。打开 /setup 直接设定，"
+              f"设置窗口开放 {w} 秒（过期重启本服务即可重新开放）。", flush=True)
 
     def _shell(title: str):
         ui.add_head_html(f"<style>{theme.GLOBAL_CSS}</style>")
@@ -191,11 +195,17 @@ def install_gate(data_dir: Path) -> None:
             ui.navigate.to("/login")
             return
 
+        if not setup_open():
+            with _shell("首次设置窗口已关闭"):
+                ui.label("为防止站点被陌生人抢先占用，密码只能在服务重启后的"
+                         f" {setup_window_s()} 秒内设置。请重启服务后再打开本页：\n"
+                         "systemctl restart earnfarm") \
+                    .classes("text-sm w-80").style("white-space:pre-line")
+            return
+
         def do_setup() -> None:
-            expected = setup_token(data_dir)
-            if not secrets.compare_digest((token_in.value or "").strip(), expected):
-                ui.notify("令牌不对。它在服务器上：journalctl -u earnfarm | grep 令牌",
-                          type="negative")
+            if not setup_open():
+                ui.notify("设置窗口已过期，请重启服务后重试", type="negative")
                 return
             if (pw1.value or "") != (pw2.value or ""):
                 ui.notify("两次输入的密码不一致", type="negative")
@@ -210,15 +220,14 @@ def install_gate(data_dir: Path) -> None:
             ui.navigate.to(app.storage.user.get("referrer_path", "/"))
 
         with _shell("首次设置：请设定你自己的访问密码"):
-            token_in = ui.input("一次性设置令牌").props("outlined").classes("w-72")
             pw1 = ui.input("设置访问密码（至少 8 位）", password=True,
                            password_toggle_button=True).props("outlined").classes("w-72")
             pw2 = ui.input("再输一次", password=True) \
                 .props("outlined").classes("w-72")
             pw2.on("keydown.enter", do_setup)
             ui.button("设置并进入", on_click=do_setup).props("unelevated").classes("w-72")
-            ui.label("令牌用来防止站点被人抢先占用——它在服务器的日志和数据目录里，"
-                     "只有你拿得到。设完即作废。") \
+            ui.label(f"设置窗口在服务重启后开放 {setup_window_s() // 60} 分钟"
+                     "（防止站点被陌生人抢先占用），过期重启服务即可重开。") \
                 .classes("text-xs w-72").style(f"color:{theme.NEUTRAL}")
 
     @ui.page("/login")

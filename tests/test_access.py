@@ -60,14 +60,20 @@ def test_short_password_rejected(tmp_path):
     assert not access.password_configured(tmp_path)
 
 
-def test_setup_token_is_stable_then_consumed(tmp_path):
-    """令牌重启复用（不然每次重启都作废用户手里那张），设完密码即作废。"""
-    token = access.setup_token(tmp_path)
-    assert token and access.setup_token(tmp_path) == token
-    access.set_password(tmp_path, "brand-new-pass")
-    assert not (tmp_path / "setup_token").exists()
-    # 重新取会生成一张**新的**，旧令牌不能复活
-    assert access.setup_token(tmp_path) != token
+def test_setup_window_open_after_start_and_configurable(monkeypatch):
+    """首次设置只在重启后的窗口内开放——重启是只有服务器管理者能做的动作，
+    以此代替让用户去日志里抄令牌。"""
+    assert access.setup_open()                    # 进程刚起，窗口开着
+    assert access.setup_left_s() > 0
+
+    monkeypatch.setenv(access.SETUP_WINDOW_ENV, "0")
+    assert access.setup_window_s() == 0
+    assert access.setup_open()                    # 0 = 不限时（本地/内网）
+
+    monkeypatch.setenv(access.SETUP_WINDOW_ENV, "1")
+    monkeypatch.setattr(access, "_started_at", access.time.monotonic() - 60)
+    assert not access.setup_open()                # 窗口早已过期
+    assert access.setup_left_s() == 0
 
 
 def test_env_password_overrides_file(tmp_path, monkeypatch):
