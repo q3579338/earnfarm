@@ -1,9 +1,9 @@
-"""操作复盘：拉取标的的真实成交，交给本机 AI CLI 或线上 API 生成分析报告。
+﻿"""操作复盘：拉取标的的真实成交，交给本机 AI CLI 或线上 API 生成分析报告。
 
 引擎（可多选并行，各出一份报告）：
 - claude：本机 Claude Code CLI。数据经 **stdin** 管给 `claude -p`——不拼命令行
   （Windows 单条命令 32K 上限），也不需要给子进程开文件工具权限。
-- grok / codex：本机 Grok CLI / OpenAI Codex CLI。这两个是 agent 型 CLI，
+- grok / codex：本机 Grok CLI / ChatGPT Codex CLI。这两个是 agent 型 CLI，
   headless 下不保证读 stdin，所以数据落成工作目录里的 JSON 文件、指令里给文件名，
   由它们自己读——文件就是报告的原始底稿，留着不删。
 - api：任意线上大模型接口。anthropic（Messages API）或 openai
@@ -45,7 +45,7 @@ _FUNDING_CONTEXT_N = 50
 ENGINE_LABELS = {
     "claude": "Claude Code（本机 CLI）",
     "grok": "Grok（本机 CLI）",
-    "codex": "OpenAI Codex（本机 CLI）",
+    "codex": "ChatGPT Codex（本机 CLI）",
     "api": "线上 API",
 }
 

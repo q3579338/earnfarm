@@ -1,4 +1,4 @@
-# earnfarm
+﻿# earnfarm
 
 跨交易所资金费率套利工具。在币安、OKX、HTX、Gate、Bybit、Bitget、Hyperliquid、
 KuCoin 八家之间找同一个币的资金费差，一边做多一边做空，赚两边费率的差额，
@@ -205,7 +205,7 @@ url_env = "EARNFARM_ALERT_WEBHOOK_URL"
 default_engines = ["claude"]  # 页面默认勾选的引擎，可多选：claude / grok / codex / api
 claude_cmd = "claude"         # Claude Code CLI 的命令名或完整路径
 grok_cmd = "grok"             # Grok CLI，同上
-codex_cmd = "codex"           # OpenAI Codex CLI，同上
+codex_cmd = "codex"           # ChatGPT Codex CLI，同上
 api_url = "https://api.anthropic.com/v1/messages"   # 线上 API 的接口地址
 api_style = "anthropic"       # 报文风格：anthropic / openai（xAI、DeepSeek、中转站都走 openai）
 api_model = "claude-sonnet-5" # 线上 API 用的模型名
@@ -262,7 +262,7 @@ default_days = 7              # 页面默认回看天数
 改进建议。报告同时存进 `~/.earnfarm/analysis/`。
 
 - **引擎可多选并行，各出一份报告**：本机 Claude Code CLI / 本机 Grok CLI /
-  本机 OpenAI Codex CLI / 线上 API，勾几个跑几个，互相独立、互为对照。
+  本机 ChatGPT Codex CLI / 线上 API，勾几个跑几个，互相独立、互为对照。
 - **线上 API 支持两种报文风格**：`anthropic`（Messages API）和 `openai`
   （chat/completions）——xAI、DeepSeek 和各家中转站都兼容 openai 风格。
   key 走环境变量（`api_key_env` 指向的那个），**绝不进配置文件**。
