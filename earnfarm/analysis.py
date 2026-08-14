@@ -655,6 +655,91 @@ async def collect_market(symbols: Sequence[str], days: int) -> MarketBundle:
                         sections=tuple(sections), notes=tuple(notes))
 
 
+# ---- 由浏览器拉回的原始数据装配 bundle ----------------------------------
+# 线上模式下请求是从**访客自己的浏览器**发的（绕开服务器的地域封锁，
+# 且 API secret 不出他的浏览器），服务器只拿到这些已经拉好的原始 JSON。
+# 汇总统计、prompt 构造、AI 调用仍在服务端——那才是它该干的活。
+
+def bundle_from_browser(raw: dict[str, Any], since_ms: int, until_ms: int,
+                        venue: str = "binance") -> OperationBundle:
+    ops_list: list[SymbolOps] = []
+    notes: list[str] = []
+    for sec in raw.get("per_symbol", []):
+        sym = str(sec.get("symbol", ""))
+        notes.extend(str(n) for n in sec.get("notes", []))
+        fills = tuple(
+            TradeFill(
+                market="binance:perp", symbol=sym, ts_ms=int(f["time"]),
+                side=str(f.get("side", "")).lower(),
+                price=Decimal(str(f.get("price", "0"))),
+                qty=Decimal(str(f.get("qty", "0"))),
+                quote_qty=Decimal(str(f.get("quoteQty", "0"))),
+                fee=Decimal(str(f.get("commission", "0"))),
+                fee_asset=str(f.get("commissionAsset", "")),
+                realized_pnl=Decimal(str(f.get("realizedPnl", "0"))),
+                maker=bool(f.get("maker", False)),
+                order_id=str(f.get("orderId", "")),
+            ) for f in sec.get("fills", []))
+        positions = tuple(
+            Position(
+                market="binance:perp", symbol=sym,
+                qty=Decimal(str(p.get("positionAmt", "0"))),
+                entry_price=Decimal(str(p.get("entryPrice", "0"))),
+                mark_price=Decimal(str(p.get("markPrice", "0"))),
+                liquidation_price=(Decimal(str(p["liquidationPrice"]))
+                                   if Decimal(str(p.get("liquidationPrice", "0"))) > 0
+                                   else None),
+                leverage=Decimal(str(p.get("leverage", "1"))),
+            ) for p in sec.get("positions", []))
+        orders = tuple(
+            OrderResult(
+                client_order_id=str(o.get("clientOrderId", "")),
+                exchange_order_id="", status=str(o.get("status", "")).lower(),
+                filled_qty=Decimal(str(o.get("executedQty", "0"))),
+                avg_price=Decimal(str(o.get("avgPrice", "0"))),
+            ) for o in sec.get("open_orders", []))
+        funding = tuple((int(t), Decimal(str(r))) for t, r in sec.get("funding", []))
+        ops_list.append(SymbolOps(symbol=sym, fills=fills, positions=positions,
+                                  open_orders=orders, funding=funding))
+
+    notes.append("数据由你的浏览器直接向币安拉取，API 密钥未经过服务器。")
+    notes.append("realizedPnl 是平仓腿的价格盈亏，不含手续费、不含资金费——"
+                 "评估净收益必须把 summary 里的手续费合计减掉。")
+    return OperationBundle(venue=venue, since_ms=since_ms, until_ms=until_ms,
+                           ops=tuple(ops_list), notes=tuple(notes))
+
+
+def market_bundle_from_browser(raw: dict[str, Any], symbols_: Sequence[str],
+                               days: int) -> MarketBundle:
+    sections: list[MarketSection] = []
+    for sec in raw.get("per_symbol", []):
+        klines = tuple({
+            "t": _bj_iso(int(k[0])), "o": str(k[1]), "h": str(k[2]),
+            "l": str(k[3]), "c": str(k[4]), "quote_vol": str(k[5]),
+        } for k in sec.get("klines", []))
+        prem = sec.get("premium", {}) or {}
+        sections.append(MarketSection(
+            symbol=str(sec.get("symbol", "")),
+            ticker={k: str(v) for k, v in (sec.get("ticker", {}) or {}).items()},
+            premium={
+                "mark_price": str(prem.get("markPrice", "")),
+                "index_price": str(prem.get("indexPrice", "")),
+                "last_funding_rate": str(prem.get("lastFundingRate", "")),
+                "next_funding_at": (_bj_iso(int(prem["nextFundingTime"]))
+                                    if prem.get("nextFundingTime") else ""),
+            },
+            klines=klines,
+            funding=tuple({"at": _bj_iso(int(t)), "rate": str(r)}
+                          for t, r in sec.get("funding", [])),
+        ))
+    return MarketBundle(
+        symbols=tuple(symbols_), days=days,
+        interval=str(raw.get("interval", "1h")), sections=tuple(sections),
+        notes=("全部数据来自币安 USDⓈ-M 永续的公开端点（由你的浏览器直接拉取）；"
+               "价格是永续口径（自带基差），不是现货报价。",),
+    )
+
+
 def _kline_summary(klines: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """本地算好区间统计。模型擅长解释不擅长算术——同一条纪律。"""
     if not klines:

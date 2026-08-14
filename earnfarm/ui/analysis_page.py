@@ -29,6 +29,7 @@ from ..analysis import (
     ENGINE_LABELS,
     AnalysisError,
     ApiOptions,
+    bundle_from_browser,
     build_instruction,
     build_market_instruction,
     build_resolve_instruction,
@@ -37,6 +38,7 @@ from ..analysis import (
     collect_operations,
     engine_available,
     fetch_public_symbols,
+    market_bundle_from_browser,
     market_payload,
     parse_resolved,
     resolve_local,
@@ -47,7 +49,7 @@ from ..config import ANALYSIS_ENGINES, Config
 from ..models import Venue
 from ..session import CREDENTIAL_FIELDS, FIELD_LABELS, VENUE_FIELD_LABELS, Session
 from ..vault import BadPassword, VaultLocked
-from . import browser_creds, theme
+from . import binance_client, browser_creds, theme
 from .access import gate_enabled
 from .accounts import VENUE_LABELS
 from .nav import module_nav
@@ -118,6 +120,33 @@ def _report_path(config: Config, prefix: str, symbols: list[str], engine: str) -
     stem = "-".join(symbols)[:40] or "report"
     return _reports_dir(config) / \
         f"{prefix}{stem}-{time.strftime('%Y%m%d-%H%M%S')}-{engine}.md"
+
+
+async def _run_ai(job: _Job, *, cfg, engines: list[str], instruction: str,
+                  payload: str, workdir: Path, api_opts: ApiOptions | None,
+                  count_txt: str) -> None:
+    """把已经装配好的 payload 交给各引擎并行分析。线上模式（数据由浏览器
+    拉好）和本地模式（服务端拉数据）共用这一段。"""
+    job.stage = f"{count_txt}，{len(engines)} 个引擎并行分析中…"
+    for e in engines:
+        job.engines[e] = _EngineRun()
+
+    async def one(e: str) -> None:
+        r = job.engines[e]
+        try:
+            report = await run.io_bound(
+                run_engine, e, instruction, payload, cfg,
+                workdir=workdir, api_opts=api_opts)
+            r.report = report
+            r.status = "done"
+            (workdir / f"{time.strftime('%Y%m%d-%H%M%S')}-{e}.md") \
+                .write_text(report, encoding="utf-8")
+        except Exception as exc:
+            r.error = str(exc)
+            r.status = "failed"
+
+    await asyncio.gather(*(one(e) for e in engines))
+    job.stage = f"{time.strftime('%H:%M:%S')} 完成"
 
 
 async def _run_job(job: _Job, *, session: Session, config: Config, mode: str,
@@ -244,6 +273,7 @@ def build_analysis_page(session: Session, config: Config,
     online = gate_enabled()
     if online:
         browser_creds.install()
+        binance_client.install(os.environ.get("EARNFARM_FAPI_BASE", ""))
 
     with ui.header().classes("items-center justify-between px-4 py-2") \
             .style("background:#ffffff; color:#18181b; "
@@ -631,6 +661,71 @@ def build_analysis_page(session: Session, config: Config,
             status.text = msg
             status.style(f"color:{theme.WARN}")
 
+        async def start_online(engines: list[str], api_opts: ApiOptions | None,
+                               cred: dict | None) -> None:
+            """线上模式：数据由**访客的浏览器**直接向币安拉（绕开服务器的
+            地域封锁，API secret 不出他的浏览器），服务器只做汇总+AI。"""
+            job = _Job(title=(symbol_in.value or "").strip())
+            _jobs[_job_key(page_mode)] = job
+            _rendered_sig[0] = None
+            render_job()
+            workdir = _reports_dir(config)
+            cfg = config.analysis
+            try:
+                job.stage = "解析标的（浏览器直连币安）…"
+                available = await binance_client.symbols()
+                symbols, unresolved = resolve_local(
+                    available, (symbol_in.value or "").strip())
+                if unresolved:
+                    job.stage = f"「{'、'.join(unresolved)}」本地认不出，请 AI 帮忙认…"
+                    reply = await run.io_bound(
+                        run_engine, engines[0],
+                        build_resolve_instruction(unresolved),
+                        "\n".join(sorted(available)), cfg,
+                        workdir=workdir, api_opts=api_opts)
+                    hits = parse_resolved(reply, available)
+                    if hits:
+                        symbols.extend(s for s in hits if s not in symbols)
+                    else:
+                        raise AnalysisError(
+                            f"认不出标的「{'、'.join(unresolved)}」，试试直接填符号")
+                if not symbols:
+                    raise AnalysisError("没有解析出任何标的")
+
+                days = int(days_sel.value)
+                until_ms = int(time.time() * 1000)
+                since_ms = until_ms - days * 86_400_000
+                job.title = f"{'、'.join(symbols)}"
+                job.stage = f"标的：{'、'.join(symbols)}，浏览器拉取数据中…"
+                if page_mode == "ops":
+                    raw = await binance_client.ops(
+                        symbols, since_ms, until_ms,
+                        cred.get("api_key", ""), cred.get("api_secret", ""))
+                    bundle = bundle_from_browser(raw, since_ms, until_ms)
+                    if bundle.fill_count == 0:
+                        raise AnalysisError(
+                            f"{'、'.join(symbols)} 在回看期内没有任何成交")
+                    payload = bundle_payload(bundle, max_fills=cfg.max_fills)
+                    instruction = build_instruction(bundle, focus_in.value or "")
+                    count_txt = f"共 {bundle.fill_count} 笔成交"
+                else:
+                    raw = await binance_client.market(symbols, days)
+                    mb = market_bundle_from_browser(raw, symbols, days)
+                    payload = market_payload(mb)
+                    instruction = build_market_instruction(mb, focus_in.value or "")
+                    count_txt = f"{mb.interval} K 线 × {len(mb.sections)} 个标的"
+
+                await _run_ai(job, cfg=cfg, engines=engines, instruction=instruction,
+                              payload=payload, workdir=workdir, api_opts=api_opts,
+                              count_txt=count_txt)
+            except (AnalysisError, binance_client.BinanceBrowserError) as exc:
+                job.error = str(exc)
+            except Exception as exc:
+                job.error = f"分析失败：{exc}"
+            finally:
+                job.finished = True
+                render_job()
+
         async def start() -> None:
             prev = _jobs.get(_job_key(page_mode))
             if prev is not None and not prev.finished:
@@ -647,6 +742,7 @@ def build_analysis_page(session: Session, config: Config,
 
             # ---- 凭据（仅复盘模式）----
             adapter = None
+            online_cred: dict | None = None
             save_cred: tuple[Venue, str, dict] | None = None
             if page_mode == "ops":
                 try:
@@ -694,7 +790,9 @@ def build_analysis_page(session: Session, config: Config,
                                 new_pass_in.value = ""
                             else:
                                 save_cred = (venue, alias, cred)
-                    adapter = session.build_adapter(venue, cred)
+                    if not online:
+                        adapter = session.build_adapter(venue, cred)
+                    online_cred = cred
                 except browser_creds.BrowserCredError as exc:
                     _fmt_warn(str(exc))
                     return
@@ -750,6 +848,12 @@ def build_analysis_page(session: Session, config: Config,
                     api_key=key,
                     max_tokens=config.analysis.api_max_tokens,
                 )
+
+            if online:
+                # 浏览器取数必须在有客户端上下文的协程里跑，不能扔进
+                # background_tasks（那里 run_javascript 没有客户端可用）
+                await start_online(engines, api_opts, online_cred)
+                return
 
             _rendered_sig[0] = None
             job = _Job(title=query)
