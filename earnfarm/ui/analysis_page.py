@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from nicegui import background_tasks, run, ui
+from nicegui import app, background_tasks, run, ui
 
 from ..analysis import (
     API_PRESET_LABELS,
@@ -47,7 +47,8 @@ from ..config import ANALYSIS_ENGINES, Config
 from ..models import Venue
 from ..session import CREDENTIAL_FIELDS, FIELD_LABELS, VENUE_FIELD_LABELS, Session
 from ..vault import BadPassword, VaultLocked
-from . import theme
+from . import browser_creds, theme
+from .access import gate_enabled
 from .accounts import VENUE_LABELS
 from .nav import module_nav
 
@@ -83,13 +84,32 @@ class _Job:
                 tuple((e, r.status) for e, r in self.engines.items()))
 
 
-# 每个模块一个任务槽：复盘（ops）和单币（market）各自独立跑、互不占用。
-# 模块级共享，所以换页/刷新/多标签都看得到自己模块的进度
-_jobs: dict[str, _Job | None] = {"ops": None, "market": None}
+# 任务槽按 (访客, 模块) 分：同一个人的复盘和单币互不占用，
+# **不同访客之间更是互不可见**——这工具要给别人用，共用一个槽等于
+# 别人跑的分析会顶掉你的、还能看见你的报告
+_jobs: dict[tuple[str, str], _Job] = {}
+
+
+def _visitor_id() -> str:
+    """访客标识。本地单人模式恒为 local；线上模式用浏览器 id（cookie 里的随机串）。"""
+    if not gate_enabled():
+        return "local"
+    try:
+        return str(app.storage.browser.get("id", "anon"))[:16] or "anon"
+    except Exception:
+        return "anon"
+
+
+def _job_key(page_mode: str) -> tuple[str, str]:
+    return (_visitor_id(), page_mode)
 
 
 def _reports_dir(config: Config) -> Path:
+    """报告目录。线上模式按访客分目录——别人的复盘报告不该出现在你的列表里。"""
     d = config.data_dir / "analysis"
+    vid = _visitor_id()
+    if vid != "local":
+        d = d / f"v-{vid}"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -103,11 +123,14 @@ def _report_path(config: Config, prefix: str, symbols: list[str], engine: str) -
 async def _run_job(job: _Job, *, session: Session, config: Config, mode: str,
                    query: str, days: int, focus: str, engines: list[str],
                    adapter, save_cred: tuple[Venue, str, dict] | None,
-                   api_opts: ApiOptions | None) -> None:
+                   api_opts: ApiOptions | None, workdir: Path) -> None:
     """后台执行体。只碰 job 对象和磁盘，绝不碰任何 UI 元素——
-    UI 元素属于某个客户端连接，客户端一断它们就死了，任务不能陪葬。"""
+    UI 元素属于某个客户端连接，客户端一断它们就死了，任务不能陪葬。
+
+    workdir 必须由调用方算好传进来：它依赖访客身份（cookie），而后台任务
+    里没有客户端上下文，现算会抛 "no client context"。
+    """
     cfg = config.analysis
-    workdir = _reports_dir(config)
     try:
         # ---- 标的解析 ----
         job.stage = "解析标的…"
@@ -184,8 +207,9 @@ async def _run_job(job: _Job, *, session: Session, config: Config, mode: str,
                 r.report = report
                 r.status = "done"
                 prefix = "" if mode == "ops" else "market-"
-                _report_path(config, prefix, symbols, e) \
-                    .write_text(report, encoding="utf-8")
+                stem = "-".join(symbols)[:40] or "report"
+                name = f"{prefix}{stem}-{time.strftime('%Y%m%d-%H%M%S')}-{e}.md"
+                (workdir / name).write_text(report, encoding="utf-8")
             except Exception as exc:
                 r.error = str(exc)
                 r.status = "failed"
@@ -216,6 +240,10 @@ def build_analysis_page(session: Session, config: Config,
     """
     ui.add_head_html(f"<style>{theme.GLOBAL_CSS}</style>")
     ui.dark_mode(False)
+    # 线上模式（多人共用）：凭据一律存访客自己的浏览器，服务器不托管任何人的密钥
+    online = gate_enabled()
+    if online:
+        browser_creds.install()
 
     with ui.header().classes("items-center justify-between px-4 py-2") \
             .style("background:#ffffff; color:#18181b; "
@@ -228,6 +256,11 @@ def build_analysis_page(session: Session, config: Config,
                      "发给 AI 的只有成交数据，不含任何密钥。"
                      "任务在后台跑——切走再回来，进度和结果都在。") \
                 .classes("text-xs").style(f"color:{theme.NEUTRAL}")
+            if online:
+                ui.label("🔒 你的 API 密钥用你自己设的解锁密码在**浏览器里**加密，"
+                         "存在你这台设备上，服务器不保存。分析时服务器会短暂用到"
+                         "明文（币安签名必须在服务端算），用完即弃、不写盘。") \
+                    .classes("text-xs").style(f"color:{theme.SAFE}")
         else:
             ui.label("只用币安公开行情分析标的本身——K 线、量能、资金费、基差，"
                      "不需要任何交易所凭据。AI 引擎可多选并行，各出一份报告。"
@@ -235,12 +268,16 @@ def build_analysis_page(session: Session, config: Config,
                 .classes("text-xs").style(f"color:{theme.NEUTRAL}")
 
         # ================= 主密码（就地解锁）=================
-        # 复盘页常驻；单币分析免凭据，密码框只在勾了「线上 API」时出现在
-        # API 配置区里（唯一用途：加密保存 key），免得让人以为分析要密码
-        if page_mode == "ops":
+        # 只在**本地单人模式**出现：那份 vault 是服务器/本机保管的。
+        # 线上多人模式没有 vault——每个访客的密钥在他自己浏览器里，
+        # 服务器不托管，自然也就没有"主密码"这回事
+        vault_box = None
+        if page_mode == "ops" and not online:
             vault_box = ui.column().classes("gap-1 w-full")
 
         def render_vault_state() -> None:
+            if vault_box is None:
+                return
             vault_box.clear()
             with vault_box:
                 if not session.is_initialized:
@@ -325,6 +362,12 @@ def build_analysis_page(session: Session, config: Config,
                         .props("dense outlined").classes("w-80")
                     del_btn = ui.button(icon="delete").props("dense flat") \
                         .tooltip("删除选中的复盘凭据")
+                # 线上：解锁密码在浏览器里解密，服务器不存这个密码也不存密文
+                unlock_in = ui.input("解锁密码", password=True) \
+                    .props("dense outlined").classes("w-80") \
+                    .tooltip("你保存凭据时设的那个密码。密钥在你本机加密，"
+                             "解密也在你本机进行")
+                unlock_in.set_visibility(online)
                 saved_hint = ui.label().classes("text-xs").style(f"color:{theme.WARN}")
 
             with ui.column().classes("gap-2 w-full") as fresh_box:
@@ -351,13 +394,26 @@ def build_analysis_page(session: Session, config: Config,
 
                 rebuild_cred_fields()
                 venue_sel.on_value_change(lambda e: rebuild_cred_fields())
-                save_chk = ui.checkbox("保存供下次使用（加密进本地库，需主密码）",
-                                       value=True)
+                save_chk = ui.checkbox(
+                    "保存供下次使用（加密存在**你的浏览器**里，服务器不保存）"
+                    if online else "保存供下次使用（加密进本地库，需主密码）",
+                    value=True)
+                # 线上保存要一个只有访客自己知道的解锁密码——它就是浏览器里
+                # 那份密文的钥匙，服务器不保存它，忘了就只能重填 API
+                new_pass_in = ui.input("给这条凭据设一个解锁密码（至少 6 位）",
+                                       password=True, password_toggle_button=True) \
+                    .props("dense outlined").classes("w-96")
+                new_pass_in.set_visibility(online)
+                save_chk.on_value_change(
+                    lambda e: new_pass_in.set_visibility(online and bool(e.value)))
                 ui.label("只开读取权限（查询成交/持仓），不要给交易和提币权限，"
                          "建议绑 IP 白名单。") \
                     .classes("text-xs").style(f"color:{theme.NEUTRAL}")
 
         def refresh_saved(select_id: str | None = None) -> None:
+            """本地模式：列 vault 里的复盘凭据。线上模式请用 refresh_saved_browser。"""
+            if online:
+                return
             accounts = session.list_analysis_accounts()
             options = {a.id: f"{a.alias}（{VENUE_LABELS.get(a.venue, a.venue.value)}）"
                        for a in accounts}
@@ -370,19 +426,31 @@ def build_analysis_page(session: Session, config: Config,
             else:
                 saved_hint.text = ""
 
+        async def refresh_saved_browser(select: str | None = None) -> None:
+            """线上模式：列**这台浏览器**里存的凭据（服务器上没有任何人的密钥）。"""
+            aliases = await browser_creds.list_aliases()
+            options = {a: a for a in aliases}
+            saved_sel.set_options(options, value=select or (next(iter(options), None)))
+            saved_hint.text = "" if options else \
+                "这台浏览器里还没存过凭据——切到「新填凭据」加一个"
+
         async def delete_saved() -> None:
             if not saved_sel.value:
                 return
-            label = saved_sel.options.get(saved_sel.value, "")
+            label = saved_sel.options.get(saved_sel.value, saved_sel.value)
             with ui.dialog() as dlg, ui.card():
-                ui.label(f"删除复盘凭据 {label}？密文一并删除，不可恢复。")
+                ui.label(f"删除凭据 {label}？密文一并删除，不可恢复。")
                 with ui.row():
                     ui.button("删除", on_click=lambda: dlg.submit(True)) \
                         .props("color=red unelevated")
                     ui.button("取消", on_click=lambda: dlg.submit(False)).props("flat")
             if await dlg:
-                session.delete_account(saved_sel.value)
-                refresh_saved()
+                if online:
+                    await browser_creds.delete(saved_sel.value)
+                    await refresh_saved_browser()
+                else:
+                    session.delete_account(saved_sel.value)
+                    refresh_saved()
 
         del_btn.on_click(delete_saved)
 
@@ -421,9 +489,15 @@ def build_analysis_page(session: Session, config: Config,
             with ui.row().classes("items-center gap-3 flex-wrap"):
                 api_key_in = ui.input("API Key（留空则用已存的 / 环境变量）") \
                     .props("dense outlined type=password").classes("w-96")
-                api_remember = ui.checkbox("加密保存这个 key（需解锁）", value=True)
+                api_remember = ui.checkbox(
+                    "存在我的浏览器里（服务器不保存）" if online else "加密保存这个 key（需解锁）",
+                    value=True)
+            api_pass_in = ui.input("这个 key 的解锁密码（至少 6 位）", password=True) \
+                .props("dense outlined").classes("w-96") \
+                .tooltip("AI key 也在你本机加密后存进浏览器，服务器不保管")
+            api_pass_in.set_visibility(online)
             api_hint = ui.label().classes("text-xs").style(f"color:{theme.NEUTRAL}")
-            if page_mode == "market":
+            if page_mode == "market" and not online:
                 ui.label("下面的主密码只在「加密保存 key」时需要——"
                          "不解锁也能直接分析（key 本次有效或走环境变量）。") \
                     .classes("text-xs").style(f"color:{theme.NEUTRAL}")
@@ -435,6 +509,10 @@ def build_analysis_page(session: Session, config: Config,
                 api_model_in.value = p.model
                 api_url_in.value = p.url
                 api_style_sel.value = p.style
+            if online:
+                api_hint.text = ("key 加密存在你自己的浏览器里；"
+                                 "留空 + 填解锁密码 = 用已存的那把")
+                return
             saved_key = session.has_ai_key(provider_sel.value)
             env_key = bool(os.environ.get(config.analysis.api_key_env, "").strip())
             bits = []
@@ -513,7 +591,7 @@ def build_analysis_page(session: Session, config: Config,
         _rendered_sig: list = [None]
 
         def render_job() -> None:
-            job = _jobs[page_mode]
+            job = _jobs.get(_job_key(page_mode))
             running = job is not None and not job.finished
             spinner.set_visibility(running)
             run_btn.set_enabled(not running)
@@ -554,7 +632,7 @@ def build_analysis_page(session: Session, config: Config,
             status.style(f"color:{theme.WARN}")
 
         async def start() -> None:
-            prev = _jobs[page_mode]
+            prev = _jobs.get(_job_key(page_mode))
             if prev is not None and not prev.finished:
                 _fmt_warn("这个模块上一个分析还在跑——等它完成再发起下一个")
                 return
@@ -576,7 +654,15 @@ def build_analysis_page(session: Session, config: Config,
                         if not saved_sel.value:
                             raise AnalysisError(
                                 "没有可用的复盘凭据——切到「新填凭据」加一个")
-                        venue, cred = session.open_account_credential(saved_sel.value)
+                        if online:
+                            # 解密在**浏览器里**完成，服务器这边只拿到解出来的明文
+                            blob = await browser_creds.load(
+                                saved_sel.value, unlock_in.value or "")
+                            venue = Venue(blob.get("venue", Venue.BINANCE.value))
+                            cred = {k: v for k, v in blob.items() if k != "venue"}
+                        else:
+                            venue, cred = session.open_account_credential(
+                                saved_sel.value)
                     else:
                         venue = Venue(venue_sel.value)
                         cred = {f: (w.value or "").strip()
@@ -589,8 +675,29 @@ def build_analysis_page(session: Session, config: Config,
                         if save_chk.value:
                             alias = (alias_in.value or "").strip() \
                                 or f"{venue.value} 复盘 {time.strftime('%m%d')}"
-                            save_cred = (venue, alias, cred)
+                            if online:
+                                # 存进访客自己的浏览器：加密全程在他本机做，
+                                # 服务器不留密文也不留这个解锁密码
+                                pw = (new_pass_in.value or "").strip()
+                                if len(pw) < 6:
+                                    raise AnalysisError(
+                                        "给这条凭据设一个至少 6 位的解锁密码"
+                                        "（它是你浏览器里那份密文的钥匙），"
+                                        "或取消勾选「保存供下次使用」")
+                                await browser_creds.save(
+                                    alias, {"venue": venue.value, **cred}, pw)
+                                await refresh_saved_browser(select=alias)
+                                ui.notify(f"已加密保存到本浏览器：{alias}",
+                                          type="positive")
+                                for w in cred_inputs.values():
+                                    w.value = ""
+                                new_pass_in.value = ""
+                            else:
+                                save_cred = (venue, alias, cred)
                     adapter = session.build_adapter(venue, cred)
+                except browser_creds.BrowserCredError as exc:
+                    _fmt_warn(str(exc))
+                    return
                 except VaultLocked:
                     _fmt_warn("凭据库未解锁——先在上面输入主密码")
                     return
@@ -603,16 +710,39 @@ def build_analysis_page(session: Session, config: Config,
             if "api" in engines:
                 typed = (api_key_in.value or "").strip()
                 provider = provider_sel.value
-                key = typed or (session.load_ai_key(provider) or "")
-                if typed and api_remember.value:
-                    try:
-                        session.save_ai_key(provider, typed)
-                        ui.notify("API key 已加密保存", type="positive")
-                        api_key_in.value = ""
-                        apply_preset()
-                    except VaultLocked:
-                        ui.notify("key 未保存：凭据库未解锁（本次分析继续用它）",
-                                  type="warning")
+                if online:
+                    # AI key 同样存访客自己的浏览器，服务器不保管
+                    alias = f"#ai:{provider}"
+                    pw = (api_pass_in.value or "").strip()
+                    key = typed
+                    if not typed:
+                        try:
+                            key = (await browser_creds.load(alias, pw)).get("api_key", "")
+                        except browser_creds.BrowserCredError as exc:
+                            _fmt_warn(f"取用已存的 AI key 失败：{exc}")
+                            return
+                    elif api_remember.value:
+                        if len(pw) < 6:
+                            _fmt_warn("给这个 AI key 设一个至少 6 位的解锁密码，"
+                                      "或取消勾选「存在我的浏览器里」")
+                            return
+                        try:
+                            await browser_creds.save(alias, {"api_key": typed}, pw)
+                            ui.notify("AI key 已加密存进本浏览器", type="positive")
+                            api_key_in.value = ""
+                        except browser_creds.BrowserCredError as exc:
+                            ui.notify(str(exc), type="warning")
+                else:
+                    key = typed or (session.load_ai_key(provider) or "")
+                    if typed and api_remember.value:
+                        try:
+                            session.save_ai_key(provider, typed)
+                            ui.notify("API key 已加密保存", type="positive")
+                            api_key_in.value = ""
+                            apply_preset()
+                        except VaultLocked:
+                            ui.notify("key 未保存：凭据库未解锁（本次分析继续用它）",
+                                      type="warning")
                 api_opts = ApiOptions(
                     url=(api_url_in.value or "").strip(),
                     style=api_style_sel.value,
@@ -623,19 +753,24 @@ def build_analysis_page(session: Session, config: Config,
 
             _rendered_sig[0] = None
             job = _Job(title=query)
-            _jobs[page_mode] = job
+            _jobs[_job_key(page_mode)] = job
             background_tasks.create(_run_job(
                 job, session=session, config=config, mode=page_mode,
                 query=query, days=int(days_sel.value),
                 focus=focus_in.value or "", engines=engines,
-                adapter=adapter, save_cred=save_cred, api_opts=api_opts))
+                adapter=adapter, save_cred=save_cred, api_opts=api_opts,
+                workdir=_reports_dir(config)))
             render_job()
 
         run_btn.on_click(start)
 
         # ---- 初始化 ----
         render_vault_state()
-        refresh_saved()
+        if online and page_mode == "ops":
+            # 读浏览器 localStorage 必须等客户端连上，用一次性定时器延后
+            ui.timer(0.3, lambda: refresh_saved_browser(), once=True)
+        else:
+            refresh_saved()
         sync_source()
         source.on_value_change(lambda e: sync_source())
         sync_mode()
