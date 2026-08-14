@@ -49,6 +49,16 @@ def build_app(token: str) -> FastAPI:
         allow_headers=["*"], allow_credentials=False,
     )
 
+    @app.middleware("http")
+    async def allow_private_network(request, call_next):
+        """Chrome 的 Private Network Access：公网页面访问 127.0.0.1 时会发
+        带 Access-Control-Request-Private-Network 的预检，本地服务必须显式
+        回 Access-Control-Allow-Private-Network: true，否则一律 Failed to fetch。
+        CORSMiddleware 不管这个头，只能自己补。"""
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
     def _check(tok: str | None) -> None:
         if not tok or not secrets.compare_digest(tok, token):
             raise HTTPException(status_code=401, detail="桥接令牌不对")
