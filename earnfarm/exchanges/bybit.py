@@ -207,6 +207,13 @@ class BybitAdapter(ExchangeAdapter):
            base.resolve_unknown_order 正是靠 `except (httpx.HTTPError, RateLimited)`
            做退避重试的，包掉之后消解流程会直接崩在 cancel 那一步。
         """
+        # 外部喂数缓存（基类 _request 里那道拦截对覆写版不生效，必须自带）。
+        # Bybit 服务端实测 403，机会榜那两发全靠访客浏览器喂进来
+        cached = self._public_cache_hit(method, path, signed=signed,
+                                        params=params, body=body)
+        if cached is not None:
+            return cached
+
         if self._clock.is_stale:
             try:
                 await self.sync_clock()

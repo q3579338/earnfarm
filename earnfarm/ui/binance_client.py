@@ -82,6 +82,10 @@ window.efBin = {
     return { interval: interval, per_symbol: out };
   },
 
+  // ---- 机会榜的取数搬去了 public_feed_client.py ----
+  // 那边是九家通用的（币安只是其中一家），而且带可达性表和逐家失败隔离。
+  // 这里只留单币分析/溢价监控这些币安独有的功能。
+
   // ---- 溢价监控：两条腿的 ticker / premiumIndex / K 线 ----
   async premium(pairs, refHours) {
     const out = {};

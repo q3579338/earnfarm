@@ -33,6 +33,84 @@ from ..models import (
 # 允许最多领先 1s、落后 recvWindow）。启动时校准，之后周期性刷新。
 CLOCK_RESYNC_INTERVAL_S = 300
 
+# ---- 外部喂数缓存（应对服务端被交易所拒绝）--------------------------------
+#
+# 有些交易所按 IP 拒绝我们这台服务器（币安 451 地域封锁、Bybit 403），服务端
+# 一条数据都拉不到。这时由**访客的浏览器**把公开行情拉回来（他自己的网络没被封）
+# 喂进这里，适配器的取数路径直接读缓存、一个字节都不发出去。
+#
+# 反过来也有交易所不给浏览器跨域（CORS 拒绝），那几家仍旧由服务端直连——
+# 两边正好互补，见 ui/public_feed_client.BROWSER_FETCHABLE 的实测矩阵。
+#
+# 三条铁律：
+#   1. **只服务公开数据**。signed=True 永不读缓存——私有接口要密钥，
+#      而缓存里的东西来自"某一个访客"，串号就是把 A 的持仓给 B 看。
+#   2. **键里必须带 venue**。九家的路径撞车不是假设：/api/v1/markets 这种
+#      通用路径谁都可能有，不带 venue 就是拿 Backpack 的合约表喂 KuCoin。
+#   3. **按品种查询的请求不进缓存**。缓存的是「全市场」那一发，
+#      带 symbol 的请求各查各的，误命中会让所有品种拿到同一个答案。
+_PUBLIC_CACHE: dict[str, tuple[float, Any]] = {}
+
+# 120 秒：机会榜一轮刷新实测约 105 秒，TTL 要盖得住一整轮，
+# 否则同一轮里前半段读缓存、后半段回落到必然失败的 HTTP。
+PUBLIC_CACHE_TTL_S = 120.0
+
+# 出现任意一个就判定"这是按品种查的"，直接不缓存。宁可漏缓存也不能误命中：
+# 漏了只是多发一个请求，误命中是把 BTC 的答案发给全市场且不报任何错。
+# （九家的品种参数名：币安/Bybit/Bitget symbol、OKX instId、Gate contract、
+#  HTX contract_code、HL coin、KuCoin symbol、Backpack symbol；
+#  cursor/pageNo 这类翻页参数同样排除——只缓存第一页没有意义还容易错位。）
+_PER_SYMBOL_KEYS = frozenset({
+    "symbol", "symbols", "instid", "contract", "contract_code", "coin",
+    "coins", "pair", "currency", "ccy", "cursor", "pageno", "page_index",
+    "fromid", "starttime", "endtime", "from", "to", "after", "before",
+})
+
+
+def public_cache_key(method: str, path: str,
+                     params: Mapping[str, Any] | None = None,
+                     body: Mapping[str, Any] | None = None) -> str | None:
+    """请求 → 缓存键；返回 None 表示**这个请求不该走缓存**。
+
+    键要把 params/body 一起编进去（不只是 method+path）：Bybit 的
+    instruments-info 靠 category 区分 linear/inverse，Bitget 靠 productType 区分
+    U 本位/币本位，Hyperliquid 更是所有请求都打同一个 POST /info、
+    全靠 body 的 type 区分。只用路径当键，这三家会互相覆盖。
+    """
+    merged = {**(params or {}), **(body or {})}
+    if any(str(k).lower() in _PER_SYMBOL_KEYS for k in merged):
+        return None
+    key = f"{method.upper()} {path}"
+    if merged:
+        # 排序 + str()：调用方传 1000 还是 "1000" 都要落到同一个键，
+        # 否则喂数侧和取数侧各写各的键，永远不命中
+        key += "?" + "&".join(f"{k}={merged[k]}" for k in sorted(merged, key=str))
+    return key
+
+
+def feed_public_cache(venue: str, key: str, payload: Any) -> None:
+    """喂一份公开数据。payload 必须是**适配器 _parse 之后**的形状——
+    Bitget 要剥 data 壳、Bybit 保留整个信封，喂错形状比不喂更糟。"""
+    _PUBLIC_CACHE[f"{venue}:{key}"] = (time.time(), payload)
+
+
+def public_cache_get(venue: str, key: str) -> Any | None:
+    hit = _PUBLIC_CACHE.get(f"{venue}:{key}")
+    if hit is None or time.time() - hit[0] > PUBLIC_CACHE_TTL_S:
+        return None
+    return hit[1]
+
+
+def public_cache_age_s(venue: str, key: str) -> float | None:
+    hit = _PUBLIC_CACHE.get(f"{venue}:{key}")
+    return None if hit is None else time.time() - hit[0]
+
+
+def public_cache_clear() -> None:
+    """清空。测试用；生产路径靠 TTL 自然过期，不主动清——
+    清了就等于让下一次取数去发那个注定被拒的请求。"""
+    _PUBLIC_CACHE.clear()
+
 
 class ExchangeError(Exception):
     """交易所返回的业务错误。"""
@@ -375,11 +453,35 @@ class ExchangeAdapter(abc.ABC):
                 backoff = min(backoff * 2, 1.0)
         return None
 
+    def _public_cache_hit(self, method: str, path: str, *, signed: bool = False,
+                          params: Mapping[str, Any] | None = None,
+                          body: Mapping[str, Any] | None = None) -> Any | None:
+        """外部喂进来的公开数据，没有就 None。
+
+        **四个覆写了 _request 的子类（binance/okx/bybit/kucoin）必须各自在自己的
+        覆写版开头调用它**——拦截写在基类 _request 里对它们一行都不生效，
+        而那四家里恰好有两家（binance/bybit）正是靠浏览器喂数才拿得到数据。
+        """
+        if signed:
+            return None       # 私有接口绝不读缓存：见 _PUBLIC_CACHE 的铁律 1
+        key = public_cache_key(method, path, params, body)
+        if key is None:
+            return None
+        return public_cache_get(self.venue.value, key)
+
     async def _request(self, method: str, path: str, *, quota: str = "market",
                        signed: bool = False, params: Mapping[str, Any] | None = None,
                        body: Mapping[str, Any] | None = None,
                        extra_headers: Mapping[str, str] | None = None) -> Any:
         """带配额控制和退避的 HTTP 请求。子类通过覆写 _sign 注入各家签名。"""
+        # 缓存命中要挡在**校时之前**：校时自己也是一发 HTTP，被封锁的家一样会挨拒，
+        # 挡在后面等于"读了缓存但还是发了个请求"，白白违背零请求的前提。
+        # 本地模式下缓存永远是空的（没人喂），这一段等于不存在。
+        cached = self._public_cache_hit(method, path, signed=signed,
+                                        params=params, body=body)
+        if cached is not None:
+            return cached
+
         if self._clock.is_stale and not self._syncing_clock:
             try:
                 await self.sync_clock()

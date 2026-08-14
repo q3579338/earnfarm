@@ -439,6 +439,14 @@ class KucoinAdapter(ExchangeAdapter):
         `_syncing_clock` 那道闸不能省：fetch_server_time_ms 自己也走本方法，而本方法
         开头见时钟陈旧又会去 sync_clock —— 不设闸就是无限递归/自锁。
         """
+        # 外部喂数缓存（基类 _request 里那道拦截对覆写版不生效，必须自带）。
+        # KuCoin 浏览器侧 CORS 拒绝、服务端直连是通的，所以实际不命中；
+        # 留着是为了九家同一套机制
+        cached = self._public_cache_hit(method, path, signed=signed,
+                                        params=params, body=body)
+        if cached is not None:
+            return cached
+
         if self._clock.is_stale and not self._syncing_clock:
             try:
                 await self.sync_clock()

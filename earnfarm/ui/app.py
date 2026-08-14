@@ -268,6 +268,33 @@ async def refresh_opportunities(state: AppState, status: ui.label,
     state.refreshing = True
     state.refresh_started_at = time.time()
     spinner.set_visibility(True)
+
+    # 多人模式：**混合取数**。币安 451、Bybit 403 —— 这两家服务端拉不到，
+    # 只能让访客的浏览器拉；另外五家不给浏览器跨域（CORS 拒），只能走服务端。
+    # 两边互补才凑齐九家，详见 public_feed_client 的实测矩阵。
+    # 浏览器那一侧失败不挡整轮刷新：没喂上缓存的家自动回落服务端直连，
+    # 回落也失败就在榜上如实缺席——少一家总比一条都没有强。
+    browser_note = ""          # 浏览器取数的结论，最后如实拼进状态栏
+    from .access import hosted_mode
+    if hosted_mode():
+        from . import public_feed_client
+        picked = [v.value for v in state.enabled_venues
+                  if v.value in public_feed_client.BROWSER_FETCHABLE]
+        if picked:
+            _set_feed_status(state, status,
+                             f"正在用你的浏览器拉取 {'、'.join(picked)} 的行情…",
+                             theme.NEUTRAL)
+            try:
+                fed, feed_errs = await public_feed_client.feed_board_all(
+                    state.enabled_venues)
+            except Exception as exc:
+                # 整轮往返都没成（页面断开/JS 没注入）：九家全部回落服务端
+                fed, feed_errs = {}, {"浏览器": str(exc)}
+            if fed:
+                browser_note = f"　·　浏览器取数：{'、'.join(sorted(fed))}"
+            if feed_errs:
+                why = "；".join(f"{v}: {m}" for v, m in sorted(feed_errs.items()))
+                browser_note += f"　·　浏览器取数失败（已回落服务端）：{why}"
     # 家数从**勾选**里数出来，别写死——上一次写死"六家"，加了两家之后这行文案
     # 骗了所有人一轮
     _set_feed_status(state, status,
@@ -308,10 +335,14 @@ async def refresh_opportunities(state: AppState, status: ui.label,
                    f"　·　{time.strftime('%H:%M:%S')} 更新")
         if state.venues_failed:
             _set_feed_status(state, status,
-                             ok_text + f"　·　{'、'.join(state.venues_failed)} 没取到数据",
+                             ok_text + f"　·　{'、'.join(state.venues_failed)} 没取到数据"
+                             + browser_note,
                              theme.WARN)
         else:
-            _set_feed_status(state, status, ok_text)
+            # 浏览器取数有失败也要 WARN：全都出榜了不代表取数路径是健康的，
+            # 悄悄回落服务端会掩盖"某家 CORS 关了"这种要人工复核的变化
+            _set_feed_status(state, status, ok_text + browser_note,
+                             theme.WARN if "失败" in browser_note else None)
         if history_status is not None:
             _set_history_status(state, history_status,
                                 f"历史 {hits}/{total} 条腿" if total else "")
@@ -495,6 +526,11 @@ def build(config: Config, offline: bool = False,
     # 人人可看；真要交易请用本地那份。
     from .access import hosted_mode
     _hosted = hosted_mode()
+    if _hosted:
+        # 机会榜的浏览器取数器。必须在这里注入（add_head_html 是按页的），
+        # 漏了的话 refresh_opportunities 那边会整轮往返失败、九家全回落服务端
+        from . import public_feed_client
+        public_feed_client.install()
 
     with ui.tabs().classes("w-full") as tabs:
         tab_ops = ui.tab("机会榜")

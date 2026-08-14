@@ -230,6 +230,14 @@ class OkxAdapter(ExchangeAdapter):
         字符串没有任何保证一致（separators、ensure_ascii、key 顺序任一不同就废）。
         这里改成 `content=`，且两处都调用同一个 `_dumps` 作用在同一个 dict 上。
         """
+        # 外部喂数缓存（基类 _request 里那道拦截对覆写版不生效，必须自带）。
+        # OKX 浏览器侧 CORS 拒绝、服务端直连是通的，所以这道拦截对它实际上
+        # 永远不命中——留着是为了九家同一套机制，哪天 CORS 放开不用再改代码
+        cached = self._public_cache_hit(method, path, signed=signed,
+                                        params=params, body=body)
+        if cached is not None:
+            return cached
+
         if self._clock.is_stale:
             try:
                 await self.sync_clock()

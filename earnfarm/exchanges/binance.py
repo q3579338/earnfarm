@@ -80,6 +80,12 @@ HISTORY_MAX_PAGES = 32
 # 超了直接报 -1127。翻整段历史必须按窗切片
 USER_TRADES_WINDOW_MS = 7 * 86_400_000
 
+# ---- 外部喂数缓存（应对地域封锁）-----------------------------------------
+# 币安按 IP 拦截，部署在受限地区的服务器一条数据都拉不到。公开部署时由
+# **访客的浏览器**把公开行情拉回来喂进缓存，取数路径直接读缓存。
+# 这套机制现在住在 base.py（九家共用，见那里的 _PUBLIC_CACHE 注释），
+# 本文件只负责在两处控制流分叉的地方显式查一下缓存；其余调用点靠
+# base.ExchangeAdapter._request 的统一拦截，不用写任何额外代码。
 # 保持 5000 并主动校时，不靠调大 recvWindow 掩盖漂移——
 # 那会让延迟到达的撤单在你以为它超时之后才生效
 RECV_WINDOW_MS = 5000
@@ -342,6 +348,13 @@ class BinanceAdapter(ExchangeAdapter):
         的重试循环捕获的是 httpx.HTTPError —— 吞掉之后消解流程会直接崩。
         这里保留原始异常，由 place_order 单独翻译成 OrderUnknown。
         """
+        # 外部喂数缓存的拦截：基类 _request 里那道对本方法一行都不生效，
+        # 覆写就得自己带上——币安恰恰是最依赖它的一家（服务端 451）
+        cached = self._public_cache_hit(method, path, signed=signed,
+                                        params=params, body=body)
+        if cached is not None:
+            return cached
+
         # 基类的 _request 在 fetch_server_time_ms 里会递归校时，这里加锁打断
         if self._clock.is_stale and not self._in_clock_sync:
             self._in_clock_sync = True
@@ -474,6 +487,8 @@ class BinanceAdapter(ExchangeAdapter):
         return int(data["serverTime"])
 
     async def fetch_instruments(self) -> Sequence[Instrument]:
+        # 被封锁时这一发由访客浏览器喂进缓存，_request 会直接返回它、不发 HTTP
+        # （拦截在 _request 里，这里不需要也不该再写一次判断）
         data = await self._request("GET", "/fapi/v1/exchangeInfo", quota="market")
         await self._load_funding_info()
 
@@ -523,6 +538,7 @@ class BinanceAdapter(ExchangeAdapter):
         """
         if not force and time.time() - self._funding_info_at < FUNDING_INFO_TTL_S:
             return
+        # 同 exchangeInfo：缓存命中由 _request 拦截，这里只管正常调用
         data = await self._request("GET", "/fapi/v1/fundingInfo", quota="market")
         for item in data or []:
             symbol = item["symbol"]
@@ -711,13 +727,26 @@ class BinanceAdapter(ExchangeAdapter):
         符号用交易所原始约定：正 = 多头付给空头。原样写入，不取反
         （models.CarryRate 的约定；base.py 里那句"适配器要取负"的注释已过期）。
         """
-        await self._load_funding_info()
-        params: dict[str, Any] = {}
-        if symbols and len(symbols) == 1:
-            params["symbol"] = symbols[0]     # 带 symbol 权重 1，不带 10
-        data = await self._request("GET", "/fapi/v1/premiumIndex",
-                                   quota="market", params=params)
-        rows = data if isinstance(data, list) else [data]
+        # 被地域封锁时，公开行情由访客浏览器喂进缓存（见 base._PUBLIC_CACHE）。
+        # 这里**必须**显式查一次，不能只靠 _request 的拦截：命中缓存时
+        # _load_funding_info 的失败要被容忍（结算周期退回默认 8h，榜照出），
+        # 而没缓存的正常路径上它失败就该整轮抛出去。控制流不同，不是重复判断。
+        cached = (self._public_cache_hit("GET", "/fapi/v1/premiumIndex")
+                  if not symbols else None)
+        if cached is not None:
+            rows = cached
+            try:
+                await self._load_funding_info()
+            except Exception:
+                pass          # 结算周期拿不到就退回默认 8h，不挡整张榜
+        else:
+            await self._load_funding_info()
+            params: dict[str, Any] = {}
+            if symbols and len(symbols) == 1:
+                params["symbol"] = symbols[0]     # 带 symbol 权重 1，不带 10
+            data = await self._request("GET", "/fapi/v1/premiumIndex",
+                                       quota="market", params=params)
+            rows = data if isinstance(data, list) else [data]
         wanted = set(symbols) if symbols else None
 
         out: list[CarryRate] = []
