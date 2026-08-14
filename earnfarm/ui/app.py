@@ -775,8 +775,16 @@ def main(argv: list[str] | None = None) -> None:
         # 单币分析：公开行情免凭据；与复盘页共用引擎、后台任务和历史报告
         build_analysis_page(state.session, config, page_mode="market")
 
+    # 访问闸：设了 EARNFARM_WEB_PASSWORD 就整站先过 /login。
+    # 挂公网（哪怕躲在反代后面）必须开——运行时状态是所有客户端共享的，
+    # 没有这道闸，你解锁的 vault 对任何访客都是解锁的
+    from .access import gate_enabled, install_gate, storage_secret
+    if gate_enabled():
+        install_gate()
+
     ui.run(host=config.server.host, port=port, title="earnfarm",
-           reload=False, show=False, dark=False)
+           reload=False, show=False, dark=False,
+           storage_secret=storage_secret(config.data_dir))
 
 
 if __name__ in {"__main__", "__mp_main__"}:

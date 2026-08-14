@@ -1,0 +1,8 @@
+# 运行依赖。版本取当前实测可用的下限，别无谓地钉死小版本
+nicegui>=3.15
+httpx>=0.28
+cryptography>=43
+websockets>=13
+
+# 开发/测试
+pytest>=8
