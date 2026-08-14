@@ -277,6 +277,49 @@ async def fetch_snapshot(pair: PremiumPair,
             await client.aclose()
 
 
+def snapshot_from_raw(pair: PremiumPair, raw: dict) -> PremiumSnapshot:
+    """用**浏览器拉回来的**原始 JSON 装配快照。
+
+    公开部署时服务器可能被交易所地域封锁（美国 IP 直接 451），而访客自己的
+    网络多半通——所以请求从他的浏览器发出，服务器只做这一步计算。
+    字段与 fetch_snapshot 完全一致，只是数据来源换了个方向。
+    """
+    errors: list[str] = []
+
+    def leg(ticker: dict, funding: dict | None) -> LegQuote:
+        q = LegQuote(
+            symbol=str(ticker["symbol"]),
+            price=float(ticker["lastPrice"]),
+            change_24h_pct=float(ticker["priceChangePercent"]),
+            quote_volume_24h=float(ticker["quoteVolume"]),
+        )
+        if funding:
+            q.funding_rate = float(funding["lastFundingRate"])
+            q.next_funding_ts = float(funding["nextFundingTime"]) / 1000.0
+        else:
+            errors.append(f"{q.symbol} 资金费缺失")
+        return q
+
+    adr = leg(raw["t_adr"], raw.get("f_adr"))
+    local = leg(raw["t_loc"], raw.get("f_loc"))
+    fair, premium = compute_premium(adr.price, local.price, pair.ratio)
+
+    ref = None
+    series: tuple = ()
+    k_adr, k_loc = raw.get("k_adr") or [], raw.get("k_loc") or []
+    if k_adr and k_loc:
+        adr_closes = {int(k[0]): float(k[4]) for k in k_adr}
+        loc_closes = {int(k[0]): float(k[4]) for k in k_loc}
+        series = tuple(align_series(adr_closes, loc_closes, pair.ratio))
+        ref = make_ref_stats(adr_closes, loc_closes, pair.ratio, premium)
+    else:
+        errors.append("K 线缺失，参考区间缺席")
+
+    return PremiumSnapshot(pair=pair, adr=adr, local=local, fair=fair,
+                           premium_pct=premium, ref=ref, series=series,
+                           errors=tuple(errors))
+
+
 async def fetch_all(pairs: tuple[PremiumPair, ...] = DUAL_PAIRS,
                     ref_hours: int = DEFAULT_REF_HOURS
                     ) -> list[PremiumSnapshot | Exception]:

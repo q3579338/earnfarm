@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -23,8 +24,10 @@ from ..premium import (
     ladder,
     ladder_levels,
     session_status,
+    snapshot_from_raw,
 )
-from . import theme
+from . import binance_client, theme
+from .access import hosted_mode
 from .nav import module_nav
 from .premium_chart import render_svg
 
@@ -167,6 +170,10 @@ def build_premium_page() -> None:
     不碰 Session / vault / 六家适配器，和机会榜互不占用。"""
     ui.add_head_html(f"<style>{theme.GLOBAL_CSS}</style>")
     ui.dark_mode(False)
+    # 多人模式：行情由**访客的浏览器**直连币安拉（服务器可能被地域封锁）
+    online = hosted_mode()
+    if online:
+        binance_client.install(os.environ.get("EARNFARM_FAPI_BASE", ""))
 
     with ui.header().classes("items-center justify-between px-4 py-2") \
             .style("background:#ffffff; color:#18181b; "
@@ -198,10 +205,24 @@ def build_premium_page() -> None:
         async def refresh() -> None:
             refresh_btn.set_enabled(False)
             spinner.set_visibility(True)
-            status.text = "拉取中…（6 个公开请求，无需 key）"
+            status.text = ("拉取中…（由你的浏览器直连币安）" if online
+                           else "拉取中…（6 个公开请求，无需 key）")
             try:
-                snapshots = await fetch_all(DUAL_PAIRS,
-                                            ref_hours=int(lookback.value))
+                if online:
+                    raw = await binance_client.premium(
+                        [{"key": p.key, "adr": p.adr_symbol, "local": p.local_symbol}
+                         for p in DUAL_PAIRS], int(lookback.value))
+                    snapshots = []
+                    for p in DUAL_PAIRS:
+                        item = (raw or {}).get(p.key) or {}
+                        if item.get("err") or "t_adr" not in item:
+                            snapshots.append(RuntimeError(
+                                f"{p.name} 行情拉取失败：{item.get('err', '无数据')}"))
+                        else:
+                            snapshots.append(snapshot_from_raw(p, item))
+                else:
+                    snapshots = await fetch_all(DUAL_PAIRS,
+                                                ref_hours=int(lookback.value))
                 cards.clear()
                 with cards:
                     for snap in snapshots:

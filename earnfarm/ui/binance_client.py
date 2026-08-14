@@ -82,6 +82,33 @@ window.efBin = {
     return { interval: interval, per_symbol: out };
   },
 
+  // ---- 溢价监控：两条腿的 ticker / premiumIndex / K 线 ----
+  async premium(pairs, refHours) {
+    const out = {};
+    for (const p of pairs) {
+      try {
+        const [tA, tL, fA, fL, kA, kL] = await Promise.all([
+          this.pub('/fapi/v1/ticker/24hr', { symbol: p.adr }),
+          this.pub('/fapi/v1/ticker/24hr', { symbol: p.local }),
+          this.pub('/fapi/v1/premiumIndex', { symbol: p.adr }),
+          this.pub('/fapi/v1/premiumIndex', { symbol: p.local }),
+          this.pub('/fapi/v1/klines', { symbol: p.adr, interval: '1h', limit: refHours }),
+          this.pub('/fapi/v1/klines', { symbol: p.local, interval: '1h', limit: refHours }),
+        ]);
+        const trim = t => ({ symbol: t.symbol, lastPrice: t.lastPrice,
+                             priceChangePercent: t.priceChangePercent,
+                             quoteVolume: t.quoteVolume });
+        const fnd = f => ({ lastFundingRate: f.lastFundingRate,
+                            nextFundingTime: f.nextFundingTime });
+        // K 线只留 [开盘时刻, ..., 收盘价]：对齐序列只用这两列
+        const kt = kl => kl.map(k => [k[0], 0, 0, 0, k[4]]);
+        out[p.key] = { t_adr: trim(tA), t_loc: trim(tL), f_adr: fnd(fA),
+                       f_loc: fnd(fL), k_adr: kt(kA), k_loc: kt(kL) };
+      } catch (e) { out[p.key] = { err: e.message }; }
+    }
+    return out;
+  },
+
   // ---- 操作复盘：签名请求，secret 不出浏览器 ----
   async ops(symbols, sinceMs, untilMs, key, secret) {
     const WINDOW = 7 * 86400000;          // userTrades 的 startTime/endTime 跨度上限
@@ -212,6 +239,11 @@ async def symbols(timeout: float = 30.0) -> set[str]:
 
 async def market(symbols_: list[str], days: int, timeout: float = 90.0) -> dict:
     expr = f"window.efBin.market({json.dumps(symbols_)}, {int(days)})"
+    return await _call(expr, timeout)
+
+
+async def premium(pairs: list[dict], ref_hours: int, timeout: float = 90.0) -> dict:
+    expr = f"window.efBin.premium({json.dumps(pairs)}, {int(ref_hours)})"
     return await _call(expr, timeout)
 
 
