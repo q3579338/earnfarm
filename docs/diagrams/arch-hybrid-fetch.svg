@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 552" role="img" aria-labelledby="earnfarm-arch-title earnfarm-arch-desc" font-family="'Geist','Helvetica Neue',Arial,'PingFang SC','Microsoft YaHei',sans-serif">
+  <title id="earnfarm-arch-title">earnfarm 公开版：按可达性分流的混合取数架构</title>
+  <desc id="earnfarm-arch-desc">访客浏览器直连被地域封锁的四家交易所并把行情喂入服务端公开缓存；服务端只直连浏览器因 CORS 无法访问的五家交易所。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#71717a"/>
+    </marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/>
+    </marker>
+    <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/>
+    </marker>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="100%" height="100%" fill="#ffffff"/>
+
+  <!-- ==== 区域（先画） ==== -->
+  <rect x="32" y="80" width="256" height="136" rx="8" fill="rgba(24,24,27,0.02)" stroke="rgba(24,24,27,0.10)" stroke-width="0.8"/>
+  <rect x="48" y="84" width="120" height="12" rx="2" fill="#ffffff"/>
+  <text x="108" y="93" fill="rgba(24,24,27,0.40)" font-size="7" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.14em">访客设备 · 零安装</text>
+
+  <rect x="32" y="240" width="256" height="232" rx="8" fill="rgba(24,24,27,0.02)" stroke="rgba(24,24,27,0.10)" stroke-width="0.8"/>
+  <rect x="48" y="244" width="136" height="12" rx="2" fill="#ffffff"/>
+  <text x="116" y="253" fill="rgba(24,24,27,0.40)" font-size="7" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.14em">EARN.SATLOOT.COM · VPS</text>
+
+  <rect x="640" y="80" width="296" height="392" rx="8" fill="rgba(24,24,27,0.02)" stroke="rgba(24,24,27,0.10)" stroke-width="0.8"/>
+  <rect x="656" y="84" width="104" height="12" rx="2" fill="#ffffff"/>
+  <text x="708" y="93" fill="rgba(24,24,27,0.40)" font-size="7" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.14em">九家交易所</text>
+
+  <!-- ==== 连接线（区域之后、节点之前） ==== -->
+  <!-- 1. 浏览器 → 浏览器直连组（CORS 放行） -->
+  <line x1="256" y1="148" x2="668" y2="148" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+  <rect x="416" y="128" width="96" height="12" rx="2" fill="#ffffff"/>
+  <text x="464" y="137" fill="#2e5aa8" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.06em">直连 · CORS 放行</text>
+
+  <!-- 2. 浏览器 → 公开缓存（喂入行情，焦点路径） -->
+  <line x1="160" y1="192" x2="160" y2="268" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+  <rect x="172" y="216" width="80" height="16" rx="2" fill="#ffffff"/>
+  <text x="176" y="228" fill="#eb6c36" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace" letter-spacing="0.06em">喂入公开行情</text>
+
+  <!-- 3. 公开缓存 → 服务端 -->
+  <line x1="160" y1="336" x2="160" y2="380" stroke="#71717a" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <rect x="172" y="348" width="56" height="16" rx="2" fill="#ffffff"/>
+  <text x="176" y="360" fill="#71717a" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace" letter-spacing="0.06em">读缓存</text>
+
+  <!-- 4. 服务端 → 服务端直连组 -->
+  <line x1="256" y1="432" x2="668" y2="432" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+  <rect x="416" y="412" width="96" height="12" rx="2" fill="#ffffff"/>
+  <text x="464" y="421" fill="#2e5aa8" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.06em">服务端直连</text>
+
+  <!-- 5. 服务端 ⇢ 浏览器直连组：被地域封锁的死路（虚线，无箭头，✕ 结尾） -->
+  <path d="M 256,408 H 456 Q 464,408 464,400 V 180 Q 464,172 472,172 H 656"
+        fill="none" stroke="#71717a" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="664" y="176" fill="rgba(24,24,27,0.55)" font-size="12" font-family="'Geist Mono',ui-monospace,Consolas,monospace">✕</text>
+  <rect x="476" y="272" width="104" height="16" rx="2" fill="#ffffff"/>
+  <text x="480" y="284" fill="#71717a" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace" letter-spacing="0.06em">451/403 被封</text>
+
+  <!-- ==== 节点 ==== -->
+  <!-- 访客浏览器 -->
+  <rect x="64" y="120" width="192" height="72" rx="6" fill="#ffffff"/>
+  <rect x="64" y="120" width="192" height="72" rx="6" fill="rgba(113,113,122,0.10)" stroke="#a1a1aa" stroke-width="1"/>
+  <rect x="72" y="126" width="40" height="12" rx="2" fill="transparent" stroke="rgba(161,161,170,0.40)" stroke-width="0.8"/>
+  <text x="92" y="135" fill="rgba(113,113,122,0.80)" font-size="7" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.08em">BROWSER</text>
+  <text x="160" y="158" fill="#18181b" font-size="12" font-weight="600" text-anchor="middle">访客浏览器</text>
+  <text x="160" y="176" fill="#71717a" font-size="9" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle">web crypto · localStorage</text>
+
+  <!-- 公开数据缓存（焦点） -->
+  <rect x="64" y="272" width="192" height="64" rx="6" fill="#ffffff"/>
+  <rect x="64" y="272" width="192" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+  <rect x="72" y="278" width="36" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+  <text x="90" y="287" fill="rgba(235,108,54,0.90)" font-size="7" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.08em">CACHE</text>
+  <text x="160" y="304" fill="#18181b" font-size="12" font-weight="600" text-anchor="middle">公开数据缓存</text>
+  <text x="160" y="322" fill="#71717a" font-size="9" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle">ttl 120s · 仅公开行情</text>
+
+  <!-- earnfarm 服务端 -->
+  <rect x="64" y="384" width="192" height="72" rx="6" fill="#ffffff"/>
+  <rect x="64" y="384" width="192" height="72" rx="6" fill="#ffffff" stroke="#18181b" stroke-width="1"/>
+  <rect x="72" y="390" width="28" height="12" rx="2" fill="transparent" stroke="rgba(24,24,27,0.40)" stroke-width="0.8"/>
+  <text x="86" y="399" fill="rgba(24,24,27,0.80)" font-size="7" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.08em">APP</text>
+  <text x="160" y="422" fill="#18181b" font-size="12" font-weight="600" text-anchor="middle">earnfarm 服务端</text>
+  <text x="160" y="440" fill="#71717a" font-size="9" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle">127.0.0.1:8777 · 评分与汇总</text>
+
+  <!-- 浏览器直连组 -->
+  <rect x="672" y="120" width="232" height="80" rx="6" fill="#ffffff"/>
+  <rect x="672" y="120" width="232" height="80" rx="6" fill="rgba(24,24,27,0.03)" stroke="rgba(24,24,27,0.30)" stroke-width="1"/>
+  <rect x="680" y="126" width="32" height="12" rx="2" fill="transparent" stroke="rgba(24,24,27,0.30)" stroke-width="0.8"/>
+  <text x="696" y="135" fill="rgba(24,24,27,0.60)" font-size="7" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.08em">EXCH</text>
+  <text x="788" y="160" fill="#18181b" font-size="12" font-weight="600" text-anchor="middle">浏览器直连组</text>
+  <text x="788" y="180" fill="#71717a" font-size="9" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle">binance · bybit · bitget · hl</text>
+
+  <!-- 服务端直连组 -->
+  <rect x="672" y="384" width="232" height="80" rx="6" fill="#ffffff"/>
+  <rect x="672" y="384" width="232" height="80" rx="6" fill="rgba(24,24,27,0.03)" stroke="rgba(24,24,27,0.30)" stroke-width="1"/>
+  <rect x="680" y="390" width="32" height="12" rx="2" fill="transparent" stroke="rgba(24,24,27,0.30)" stroke-width="0.8"/>
+  <text x="696" y="399" fill="rgba(24,24,27,0.60)" font-size="7" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle" letter-spacing="0.08em">EXCH</text>
+  <text x="788" y="424" fill="#18181b" font-size="12" font-weight="600" text-anchor="middle">服务端直连组</text>
+  <text x="788" y="444" fill="#71717a" font-size="9" font-family="'Geist Mono',ui-monospace,Consolas,monospace" text-anchor="middle">okx · gate · htx · kucoin · backpack</text>
+
+  <!-- ==== 图例（底部横条） ==== -->
+  <line x1="32" y1="496" x2="928" y2="496" stroke="rgba(24,24,27,0.10)" stroke-width="0.8"/>
+  <text x="32" y="516" fill="#71717a" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace" letter-spacing="0.14em">图例</text>
+  <line x1="112" y1="512" x2="140" y2="512" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+  <text x="148" y="516" fill="#71717a" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace">HTTP 取数</text>
+  <line x1="256" y1="512" x2="284" y2="512" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+  <text x="292" y="516" fill="#71717a" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace">关键机制：浏览器喂数</text>
+  <line x1="448" y1="512" x2="476" y2="512" stroke="#71717a" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="484" y="516" fill="#71717a" font-size="8" font-family="'Geist Mono',ui-monospace,Consolas,monospace">✕ 被地域封锁的路径</text>
+</svg>
