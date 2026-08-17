@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 
 from nicegui import ui
 
+from .. import arb
 from ..premium import (
     DEFAULT_REF_HOURS,
     DUAL_PAIRS,
@@ -65,6 +66,159 @@ def _tile(label: str, value: str, color: str = "#18181b", sub: str = "") -> None
         ui.label(value).classes("text-xl font-bold cf-mono").style(f"color:{color}")
         if sub:
             ui.label(sub).classes("text-xs cf-mono").style(f"color:{theme.NEUTRAL}")
+
+
+def _money(value: float, signed: bool = False) -> str:
+    """金额一律两位小数。theme.usd 会缩成 K/M，下单要照抄的数字不能被缩。"""
+    return f"{value:{'+' if signed else ''},.2f}"
+
+
+def _calc_table(columns: list[tuple[str, str, str]], rows: list[dict]) -> None:
+    """(name, label, align) 三元组建密表。这页的四张小表长得一样，别重复三遍。"""
+    ui.table(
+        columns=[{"name": n, "label": lb, "field": n, "align": al}
+                 for n, lb, al in columns],
+        rows=rows,
+    ).classes("cf-dense w-full").props("dense flat hide-bottom")
+
+
+def _render_calc_body(calc: arb.ArbCalc) -> None:
+    """把算好的四块摆出来。这里一行算术都没有——全在 arb.py 里。"""
+    hedge, funding, cost = calc.hedge, calc.funding, calc.cost
+
+    # ---- ① 对冲比例 ----
+    ui.label("① 对冲比例（等名义额）").classes("text-xs font-bold mt-1")
+    _calc_table(
+        [("leg", "腿", "left"), ("act", "动作", "left"),
+         ("px", "现价", "right"), ("qty", "张数", "right"),
+         ("nom", "名义额", "right")],
+        [{"leg": leg.label, "act": leg.action, "px": f"${_money(leg.price)}",
+          "qty": f"{leg.qty:,.4f}", "nom": f"${_money(leg.notional)}"}
+         for leg in (hedge.adr, hedge.local)],
+    )
+    ui.label(f"张数按交易所最小步进取整后再下单。若改按「等股数」对冲，"
+             f"ADR 腿要 {hedge.share_equiv_adr_qty:,.4f} 张——"
+             f"比上表多 {hedge.share_equiv_extra_pct:+.1f}%，"
+             f"多出来的那部分是裸单，不是对冲。") \
+        .classes("cf-reason")
+
+    # ---- ② 资金费净额 ----
+    ui.label("② 资金费净额（按当前费率不变外推）").classes("text-xs font-bold mt-2")
+    _calc_table(
+        [("leg", "腿", "left"), ("dir", "方向", "left"),
+         ("rate", "上期费率", "right"), ("iv", "周期", "right"),
+         ("per", "每次收付", "right"), ("day", "每天", "right")],
+        [{"leg": leg.symbol, "dir": "空" if leg.is_short else "多",
+          "rate": "—" if leg.rate is None else f"{leg.rate * 100:+.4f}%",
+          "iv": theme.interval_label(int(leg.interval_h * 3600)),
+          "per": f"{_money(leg.per_settle_usdt, signed=True)}",
+          "day": f"{_money(leg.per_day_usdt, signed=True)}"}
+         for leg in funding.legs],
+    )
+    net_color = theme.SAFE if funding.per_day_usdt >= 0 else theme.DANGER
+    ui.label(f"合计每天净{'收' if funding.per_day_usdt >= 0 else '付'} "
+             f"{_money(abs(funding.per_day_usdt))} USDT"
+             f"　年化 {theme.apr(funding.apr)}（占单腿名义额）") \
+        .classes("text-xs cf-mono").style(f"color:{net_color}")
+    if not funding.complete:
+        ui.label("有腿的资金费没拉到，缺的那腿按 0 计——这块数字偏乐观") \
+            .classes("text-xs").style(f"color:{theme.WARN}")
+    ui.label("正费率 = 多头付给空头。这是静态口径：费率每期都会变，"
+             "持有几天后的实际净额与这里必然不同。").classes("cf-reason")
+
+    # ---- ③ 盈亏情景 ----
+    ui.label(f"③ 盈亏情景（进场溢价 {calc.entry_premium_pct:+.2f}%，"
+             f"对数口径）").classes("text-xs font-bold mt-2")
+    _calc_table(
+        [("prem", "溢价", "right"), ("pnl", "盈亏 USDT", "right"),
+         ("pct", "占名义额", "right"), ("mark", "", "left")],
+        [{"prem": f"{row.premium_pct:+.2f}%",
+          "pnl": _money(row.pnl_usdt, signed=True),
+          "pct": f"{row.pnl_pct:+.2f}%",
+          "mark": (row.label + ("　← 现在" if row.is_current else ""))}
+         for row in calc.scenarios],
+    )
+
+    # ---- ④ 成本与回本 ----
+    ui.label("④ 成本与回本").classes("text-xs font-bold mt-2")
+    with ui.row().classes("items-start gap-8 flex-wrap"):
+        _tile("开平总手续费",
+              f"${_money(cost.fee_usdt)}",
+              sub=f"{cost.fills} 笔 taker × {cost.taker_fee * 100:.3f}%"
+                  f" = 名义额的 {cost.fee_frac * 100:.2f}%")
+        _tile("回本需溢价走",
+              f"{cost.breakeven_pp:+.2f}pp",
+              color=theme.WARN,
+              sub=f"即走到 {cost.breakeven_premium_pct:+.2f}%")
+        if cost.funding_days_to_cover is not None:
+            _tile("资金费覆盖手续费",
+                  theme.hours(cost.funding_days_to_cover * 24),
+                  sub="按当前费率不变")
+    ui.label(f"溢价波动小于 {abs(cost.breakeven_pp):.2f}pp 时，"
+             f"价差赚的还不够付这 4 笔手续费——这就是不该频繁开平的理由。") \
+        .classes("cf-reason")
+    ui.label("本表不含滑点、不含强平风险、不构成投资建议。") \
+        .classes("text-xs").style(f"color:{theme.WARN}")
+
+
+def _build_calculator(snapshot: PremiumSnapshot) -> None:
+    """计算器的输入控件 + 输出区。只在 expansion 首次展开时被调用。"""
+    with ui.column().classes("w-full gap-2"):
+        # 这句话是整个模块的论点，摆在输入之前：先看懂再填数
+        ui.label("两腿对冲后，板块整体涨跌不再影响盈亏；亏损只来自价差反向。"
+                 "这正是裸单与套利的区别。") \
+            .classes("text-xs").style(f"color:{theme.WARN}")
+
+        side = ui.radio(arb.SIDE_LABELS, value=arb.SHORT_PREMIUM) \
+            .props("inline dense")
+        with ui.row().classes("items-center gap-4 flex-wrap"):
+            notional = ui.number("每腿名义额 USDT", value=arb.DEFAULT_NOTIONAL,
+                                 min=1, step=1000) \
+                .props("dense outlined").classes("w-40")
+            # 默认填当前溢价，但**可改**——"假如我在 X% 进场"正是这页要回答的问题
+            entry = ui.number("进场溢价 %", value=round(snapshot.premium_pct, 2),
+                              step=0.5, format="%.2f") \
+                .props("dense outlined").classes("w-40") \
+                .tooltip("默认是当前溢价。改成别的值即可回答"
+                         "「假如我在这个价位进场会怎样」")
+
+        out = ui.column().classes("w-full gap-1")
+
+        def redraw() -> None:
+            out.clear()
+            with out:
+                # 输入框被清空时 value 是 None，别把 None 喂进算术层
+                if not notional.value or float(notional.value) <= 0:
+                    ui.label("填一个正的名义额").classes("text-xs") \
+                        .style(f"color:{theme.NEUTRAL}")
+                    return
+                _render_calc_body(arb.build_from_snapshot(
+                    snapshot, side=side.value,
+                    notional_per_leg=float(notional.value),
+                    entry_premium_pct=(float(entry.value)
+                                       if entry.value is not None else None)))
+
+        for control in (side, notional, entry):
+            control.on_value_change(lambda _: redraw())
+        redraw()
+
+
+def _render_calculator(snapshot: PremiumSnapshot) -> None:
+    """套利计算器区块。默认收起，且**收起时一次算术都不做**——
+    内容在首次展开时才构建，之后保留（重复折叠不重算）。
+    这页的纪律是"不自动做任何事"，一个默认收起却照样算全套的区块会破坏它。
+    """
+    exp = ui.expansion("套利计算器 · 照着数字下单", icon="calculate") \
+        .classes("w-full mt-3")
+    built: list[bool] = []
+
+    def lazy(e) -> None:
+        if e.value and not built:
+            built.append(True)
+            with exp:
+                _build_calculator(snapshot)
+
+    exp.on_value_change(lazy)
 
 
 def _render_snapshot(snapshot: PremiumSnapshot) -> None:
@@ -163,6 +317,9 @@ def _render_snapshot(snapshot: PremiumSnapshot) -> None:
         if snapshot.errors:
             ui.label("；".join(snapshot.errors)).classes("text-xs") \
                 .style(f"color:{theme.WARN}")
+
+        # ---- 套利计算器（默认收起，展开才算） ----
+        _render_calculator(snapshot)
 
 
 def build_premium_page() -> None:
